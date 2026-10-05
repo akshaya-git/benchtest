@@ -947,11 +947,15 @@ _PROBE_TEMPLATE = """<script id="__qa_probe">
     document.title = 'QAPROBE ' + JSON.stringify(out);
   }
   function measure() {
-    // canvas animation needs a second sample after a real gap
+    // first pass: compute checks (finish records canvas sample #1), then
+    // re-run finish after a gap so the animation check can compare samples.
+    // (The reschedule must happen AFTER finish — sample #1 is recorded there.
+    // Checking it before was the bug that made canvas animates never pass.)
+    finish();
     if (!_qaDone) {
-      var anim = (CFG.checks || []).some(function (c) { return c.canvasAnimates; });
-      if (anim && _qaM1 !== null) { _qaDone = true; setTimeout(measure, 900); return; }
       _qaDone = true;
+      var anim = (CFG.checks || []).some(function (c) { return c.canvasAnimates; });
+      if (anim) { setTimeout(finish, 900); return; }
     }
     // async artifacts (IndexedDB): gate the report on a same-origin hold
     // request — virtual time pauses for in-flight network, giving the
@@ -959,7 +963,6 @@ _PROBE_TEMPLATE = """<script id="__qa_probe">
     if (CFG.holdUrl) {
       try { fetch(CFG.holdUrl).then(finish).catch(finish); return; } catch (e) {}
     }
-    finish();
   }
   setTimeout(function () { doActions(0); }, 300);
 })();
