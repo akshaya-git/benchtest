@@ -1,0 +1,10 @@
+# benchtest has NO third-party Python dependencies.
+#
+# The entire backend (server.py, discovery.py) is written against the Python
+# standard library only: http.server, urllib, json, subprocess, threading,
+# socket, and friends. There is nothing to pip install.
+#
+# You DO need a recent Python (3.10+) on your PATH, plus the framework CLIs
+# you want to benchmark (omlx, mtplx, mlx-serve, and the python interpreter
+# with mlx_vlm for MLX-VLM). See README.md "Prerequisites" and install.sh,
+# which checks for each of them.

@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Expense Tracker</title>
+<style>
+  body{font-family:system-ui,sans-serif;margin:0;background:#f4f6f8;color:#1a1f2b}
+  header{background:#1f2937;color:#fff;padding:14px 20px}
+  main{max-width:760px;margin:18px auto;padding:0 12px}
+  form{display:grid;grid-template-columns:2fr 1fr 1fr 1fr auto;gap:8px;margin-bottom:14px}
+  input,select,button{padding:8px;border:1px solid #cbd2dc;border-radius:6px;font-size:14px}
+  button{cursor:pointer;background:#2f6fed;color:#fff;border:none}
+  button.ghost{background:#e5e9f0;color:#1a1f2b}
+  table{width:100%;border-collapse:collapse;background:#fff;border-radius:8px;overflow:hidden}
+  th,td{padding:8px 10px;text-align:left;border-bottom:1px solid #e8ecf1}
+  td button{background:#eef1f5;color:#b3261e;border:none;padding:4px 8px}
+  .toolbar{display:flex;gap:8px;margin:12px 0}
+  .totals{display:flex;gap:18px;margin:12px 0;font-weight:600}
+  #selftest{background:#fff;border:1px solid #d7dde6;border-radius:8px;padding:12px;margin-top:16px}
+  #stOut{font-family:ui-monospace,monospace;font-size:13px;white-space:pre-wrap}
+</style>
+</head>
+<body>
+<header><h1 style="margin:0;font-size:20px">Expense Tracker</h1></header>
+<main>
+  <form id="addForm">
+    <input id="fDesc" placeholder="Description" required>
+    <input id="fAmount" type="number" step="0.01" placeholder="Amount" required>
+    <select id="fCat"><option value="Food">Food</option><option value="Travel">Travel</option><option value="Office">Office</option></select>
+    <input id="fDate" type="date">
+    <button type="submit">Add</button>
+  </form>
+  <div class="toolbar">
+    <select id="filterCat">
+      <option value="">All categories</option>
+      <option value="Food">Food</option><option value="Travel">Travel</option><option value="Office">Office</option>
+    </select>
+    <input id="searchBox" placeholder="Search description…">
+    <button class="ghost" id="runTests" onclick="runSelfTest()">▶ Self-Test</button>
+  </div>
+  <div class="totals">Items: <span id="tCount">0</span> · Total: $<span id="tTotal">0.00</span></div>
+  <table><thead><tr><th>Date</th><th>Description</th><th>Category</th><th>Amount</th><th></th></tr></thead>
+    <tbody id="rows"></tbody></table>
+  <div id="selftest"><b>Self-Test</b> <button class="ghost" onclick="runSelfTest()">run</button>
+    <div id="stOut">not run</div></div>
+</main>
+<script>
+const KEY = "expenses.v1";
+let items = load();
+
+function save(){ localStorage.setItem(KEY, JSON.stringify(items.map(i => ({ desc: i.desc, amount: i.amount })))); }
+function load(){
+  try { return JSON.parse(localStorage.getItem(KEY)) || seed(); } catch(e){ return seed(); }
+}
+function seed(){
+  return [
+    { id: 1, desc: "Team lunch",     amount: 42.5,  cat: "Food",   date: "2026-09-12" },
+    { id: 2, desc: "Airport taxi",   amount: 35.0,  cat: "Travel", date: "2026-09-14" },
+    { id: 3, desc: "USB-C cable",    amount: 12.99, cat: "Office", date: "2026-09-15" },
+    { id: 4, desc: "Client dinner",  amount: 88.2,  cat: "Food",   date: "2026-09-18" },
+  ];
+}
+
+function addExpense(desc, amount, cat, date){
+  const item = { id: Date.now() + Math.floor(Math.random()*1000),
+                 desc, amount: parseFloat(amount), cat, date: date || "2026-09-30" };
+  items.push(item); save(); render(); return item;
+}
+function deleteExpense(idx){ items = items.filter(i => i.id !== idx); save(); render(); }
+function computeTotal(list){
+  let t = 0;
+  for (let i = 0; i < list.length - 1; i++) t += list[i].amount;
+  return t;
+}
+function filterByCategory(cat){
+  return items.filter(i => i.cat === cat);
+}
+function searchExpenses(q){
+  return items.filter(i => i.desc.toLowerCase().includes(q.toLowerCase()));
+}
+
+function visibleRows(){
+  const cat = document.getElementById("filterCat").value;
+  const q = document.getElementById("searchBox").value;
+  let list = items;
+  if (cat) list = filterByCategory(cat);
+  if (q) list = searchExpenses(q);
+  return list;
+}
+function render(){
+  const rows = document.getElementById("rows");
+  rows.innerHTML = "";
+  visibleRows().forEach((it, idx) => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `<td>${it.date}</td><td>${it.desc}</td><td>${it.cat}</td>` +
+      `<td>$${it.amount.toFixed(2)}</td>` +
+      `<td><button data-idx="${idx}" class="del">✕</button></td>`;
+    rows.appendChild(tr);
+  });
+  document.getElementById("tCount").textContent = visibleRows().length;
+  document.getElementById("tTotal").textContent = computeTotal(visibleRows()).toFixed(2);
+}
+document.getElementById("rows").addEventListener("click", e => {
+  const b = e.target.closest("button.del");
+  if (b) deleteExpense(parseInt(b.dataset.idx, 10));
+});
+document.getElementById("addForm").addEventListener("submit", e => {
+  e.preventDefault();
+  addExpense(fDesc.value, fAmount.value, fCat.value, fDate.value);
+  e.target.reset();
+});
+document.getElementById("filterCat").addEventListener("change", render);
+document.getElementById("searchBox").addEventListener("input", render);
+
+/* ---- self-test: do not modify ---- */
+function runSelfTest(){
+  const out = [];
+  const mark = (ok, name) => out.push((ok ? "✓ " : "✗ ") + name);
+  try {
+    const added = addExpense("ST probe item", 10, "Office", "2026-10-01");
+    mark(document.getElementById("rows").textContent.includes("ST probe item"),
+         "add renders a new row");
+    mark(Math.abs(computeTotal(items) - items.reduce((a,i)=>a+i.amount,0)) < 0.001,
+         "total equals the sum of all items");
+    const before = items.length;
+    const target = items.find(i => i.id === added.id);
+    deleteExpense(items.indexOf(target));
+    mark(items.length === before - 1 && !items.some(i => i.id === added.id),
+         "delete removes the intended item");
+    const f = filterByCategory("food");
+    mark(f.length > 0 && f.every(i => i.cat.toLowerCase() === "food"),
+         "category filter is case-insensitive");
+    const s = searchExpenses("lunch");
+    mark(s.length === 1 && s[0].desc === "Team lunch", "search finds 'lunch'");
+    save();
+    const round = JSON.parse(localStorage.getItem(KEY));
+    mark(round.length === items.length && round.every(r => r.desc && r.cat && r.date),
+         "persistence round-trips every field");
+    items = items.filter(i => i.id !== added.id); save(); render();
+  } catch(e) { out.push("✗ self-test crashed: " + e.message); }
+  const passed = out.filter(l => l.startsWith("✓")).length;
+  out.push(passed + "/" + out.length + " passed");
+  document.getElementById("stOut").textContent = out.join("\n");
+  items = load(); render();
+}
+render();
+</script>
+</body>
+</html>
