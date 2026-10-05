@@ -2478,16 +2478,22 @@ def _js_code_skeleton(js):
 
 
 def qa_artifact(path, requirements=None, probe_ctx=None):
-    """Quality gate for a generated artifact. functionality% blends the
-    generic HTML checklist (40%) with the task's required-feature checks
-    (60%, from REQUIREMENTS[task_id]) so a feature-incomplete artifact can
-    no longer score 100 on looks alone. When probe_ctx names a task with a
-    runtime probe and Chrome is available, a headless functional probe runs
-    on a disposable copy and its pass rate becomes 70% of the final score —
-    the regexes prove the code mentions the features, the probe proves the
-    page actually renders them. For non-HTML deliverables the requirements
-    are the whole score. quality% (code hygiene) applies to HTML only.
-    Below 90% functionality = flagged not usable."""
+    """Quality gate for a generated artifact. Returns three INDEPENDENT
+    grades so a regression in one can never mask another:
+
+      functionality — the release gate. A hard, results-focused verdict:
+          did the artifact RUN, and did the required behaviors actually work?
+          Structure: 60% runtime probe (headless Chrome interacting with the
+          real artifact — the ONLY source that measures function rather than
+          appearance), 40% declared-requirements (what the task asked for).
+          No quality/defect signals are blended into this number.
+      quality — code hygiene, reported separately (decomposition, no
+          eval/document.write, modern declarations). Never folded into
+          functionality.
+      usable — release gate: functionality >= 90.
+
+    Any failed runtime-probe check caps functionality below the usable line
+    (a page that renders but has a broken core behavior is not usable)."""
     try:
         with open(path, encoding="utf-8", errors="replace") as f:
             src = f.read()
@@ -2503,52 +2509,57 @@ def qa_artifact(path, requirements=None, probe_ctx=None):
 
     scripts = re.findall(r"<script\b[^>]*>(.*?)</script>", src, re.S | re.I)
     js = "\n;\n".join(scripts)
-    # interactivity may live in <script> blocks OR inline handler attributes;
-    # plain (non-canvas) pages are scored without game-oriented checks —
-    # same profile-aware calibration as the hart harness, so scores are
-    # comparable across all five harnesses
     has_inline_handlers = bool(re.search(r"\son[a-z]+\s*=\s*[\"']", src, re.I))
-    interactive = "<canvas" in src.lower()
 
     skeleton = _js_code_skeleton(js)
     syn_ok, syn_err = js_syntax_ok(js)
-    # Braces: node --check is the authority — a parsed file's braces are
-    # balanced by definition. The skeleton count is only a fallback for
-    # machines without node (a regex literal like /\{/ otherwise reads as
-    # an imbalance and false-fails perfectly valid files).
-    braces_ok = (syn_ok is True) or (
-        skeleton.count("{") == skeleton.count("}")
-        and skeleton.count("(") == skeleton.count(")"))
-    checks = [
-        ("doctype", bool(re.search(r"<!DOCTYPE html", src, re.I)), 5),
-        ("closed document", "</html>" in src.lower(), 10),
-        ("has javascript", len(js.strip()) > 50 or has_inline_handlers, 15),
-        ("event handlers", bool(re.search(r"addEventListener|on(keydown|click|mouse|touch|input)",
-                                          js, re.I)) or has_inline_handlers, 15),
-        ("run loop", bool(re.search(r"requestAnimationFrame|setInterval|setTimeout", js)), 15),
-        ("dom/canvas use", "<canvas" in src.lower() or bool(re.search(r"getElementById|querySelector", js)), 10),
-        ("braces balanced", braces_ok, 10),
-        ("substantial", len(src) > 500, 10),
-        ("no placeholders", "TODO" not in src and "lorem ipsum" not in src.lower(), 5),
+
+    notes = []
+
+    # ---- code hygiene (independent grade, reported but never blended) ----
+    funcs = len(re.findall(r"\bfunction\b|=>", skeleton))
+    qchecks = [
+        ("decomposed", funcs >= 3, 40),
+        ("no eval/doc.write", not re.search(r"\beval\s*\(|document\.write", js), 30),
+        ("modern decls", bool(re.search(r"\b(const|let)\b", js)), 30),
     ]
-    if not interactive:  # plain pages scored on applicable checks only
-        checks = [c for c in checks
-                  if c[0] not in ("run loop", "dom/canvas use", "substantial")]
-    notes = [name for name, ok, _ in checks if not ok]
-    func = round(100 * sum(w for _, ok, w in checks if ok) / sum(w for _, _, w in checks))
+    # ---- functionality ----
+    # Step 1: runtime probe on a disposable copy (authoritative for function).
+    probe = None
+    if probe_ctx and not probe_ctx.get("static_report"):
+        probe = run_qa_probe(path, probe_ctx.get("task"),
+                             base_url=probe_ctx.get("base_url"))
 
+    # Step 2: declared requirements (what the task asked for).
+    req_ok = req_missing == [] if requirements else None
+
+    # Step 3: hard verdicts that cannot be compensated by other checks.
+    # A JS syntax error means the page categorically cannot work.
+    qual = None
     if syn_ok is False:
-        # A syntax error means the page categorically cannot work.
-        func = min(func, 25)
+        functionality = 20
         notes.append(f"JS syntax error: {syn_err}")
-    elif syn_ok:
-        notes.append("JS syntax OK")
+    elif probe and probe.get("ran") and probe.get("fails"):
+        # the page loaded but core behaviors failed — that IS a broken artifact
+        functionality = max(10, min(60, 100 - 15 * len(probe["fails"])))
+        notes.append(f"runtime probe {probe['passed']}/{probe['total']} failed: "
+                     + ", ".join(probe["fails"]))
+        if probe.get("jsErr"):
+            notes.append(f"probe saw JS error: {probe['jsErr']}")
+    else:
+        # page runs and required behaviors work; requirements decide the rest
+        functionality = 100 if (requirements and req_ok) or not requirements else None
+        if requirements:
+            # non-requirement gaps don't break function; missing requirements do
+            functionality = max(60, 100 - 10 * len(req_missing))
+            if req_missing:
+                notes.append("missing: " + ", ".join(req_missing))
+            else:
+                notes.append("all required features present")
+        notes.append(f"runtime probe {probe['passed']}/{probe['total']} passed"
+                     if probe and probe.get("ran") else None)
 
-    looks_html = bool(re.search(r"<html|<!doctype|<body|<div|<canvas|<script", src, re.I))
-    static_report = bool(probe_ctx and probe_ctx.get("static_report"))
-    if static_report:
-        looks_html = False   # grade on requirements only: a static report is
-                             # not supposed to carry JavaScript or event loops
+    # ---- quality: independent, reported separately ----
     funcs = len(re.findall(r"\bfunction\b|=>", skeleton))
     qchecks = [
         ("decomposed", funcs >= 3, 40),
@@ -2557,46 +2568,15 @@ def qa_artifact(path, requirements=None, probe_ctx=None):
     ]
     qual = round(100 * sum(w for _, ok, w in qchecks if ok) / sum(w for _, _, w in qchecks))
 
-    if requirements:
-        if looks_html:
-            if req_missing:
-                notes.append("missing: " + ", ".join(req_missing))
-            else:
-                notes.append("all required features present")
-            func = round(func * 0.4 + req_rate * 0.6)
-        else:
-            # non-HTML deliverable: requirements are the whole score
-            func = round(req_rate)
-            qual = None
-            notes = ["requirements-only scoring (non-HTML)"]
-            if req_missing:
-                notes.append("missing: " + ", ".join(req_missing))
-            else:
-                notes.append("all required features present")
-        if probe_ctx and func > 0 and looks_html:
-            probe = run_qa_probe(path, probe_ctx.get("task"),
-                                 base_url=probe_ctx.get("base_url"))
-            if probe.get("ran"):
-                # the probe is authoritative for function: a page can mention
-                # every feature and still render nothing (observed on three
-                # markdown artifacts), so its pass rate dominates the blend
-                func = round(func * 0.3 + probe["rate"] * 0.7)
-                if probe["fails"]:
-                    notes.append(f"runtime probe {probe['passed']}/{probe['total']} failed: "
-                                 + ", ".join(probe["fails"]))
-                else:
-                    notes.append(f"runtime probe {probe['passed']}/{probe['total']} passed")
-                if probe.get("jsErr"):
-                    notes.append(f"probe saw JS error: {probe['jsErr']}")
-            else:
-                notes.append("runtime probe unavailable: " + probe.get("why", "?"))
-        elif probe_ctx and looks_html:
-            notes.append("runtime probe skipped (score already below threshold)")
-        return {"qa_func": func, "qa_qual": qual, "qa_notes": "; ".join(notes[:6]),
-                "usable": func >= 90,
-                "req_missing": req_missing, "req_rate": req_rate}
-    return {"qa_func": func, "qa_qual": qual, "qa_notes": "; ".join(notes[:6]) or "all checks passed",
-            "usable": func >= 90}
+    # ---- assemble ----
+    if functionality is None:
+        functionality = 0
+    notes = [n for n in notes if n]
+
+    out = {"qa_func": functionality, "qa_qual": qual, "qa_notes": "; ".join(notes[:6]),
+           "usable": functionality >= 90,
+           "req_missing": req_missing, "req_rate": req_rate}
+    return out
 
 
 def _arg_summary(args, cap=70):
