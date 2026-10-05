@@ -574,19 +574,19 @@ TASKS = [
 # stops feature-incomplete artifacts from scoring 100 (observed: agentconsole
 # cells missing 8-10 of 12 required features all scored 100 on generic checks).
 REQUIREMENTS = {
-    "tetris": [["canvas board", r"<canvas"], ["7 tetromino pieces", r"tetromino|SHAPES|pieces"],
+    "tetris": [["game board (canvas or grid)", r"<canvas|grid|board|cell"], ["7 tetromino pieces", r"tetromino|SHAPES|pieces"],
                ["rotation", r"rotat"], ["line clearing", r"clear.{0,6}line|line.{0,6}clear|collapse"],
                ["score", r"score"], ["levels", r"level"], ["next-piece preview", r"next"],
                ["keyboard controls", r"keydown|keyup|keyboard"],
                ["game loop", r"requestAnimationFrame|setInterval|setTimeout"],
                ["game-over state", r"game.{0,4}over|gameover"]],
-    "snake": [["canvas board", r"<canvas"], ["snake body/movement", r"snake"],
+    "snake": [["game board (canvas or grid)", r"<canvas|grid|board|cell"], ["snake body/movement", r"snake"],
               ["food", r"food|apple|berry"], ["keyboard controls", r"keydown|keyup|keyboard"],
               ["score", r"score"], ["speed increase", r"speed|interval"],
               ["game-over on collision", r"game.{0,4}over|collision"],
               ["grid/walls", r"grid|wall|wrap"], ["restart", r"restart|play.{0,4}again"],
               ["game loop", r"requestAnimationFrame|setInterval"]],
-    "pong": [["canvas board", r"<canvas"], ["paddles", r"paddle"], ["ball", r"ball"],
+    "pong": [["game board (canvas or grid)", r"<canvas|grid|board|cell"], ["paddles", r"paddle"], ["ball", r"ball"],
              ["AI opponent", r"\bai\b|computer|cpu"], ["mouse/keyboard control", r"mousemove|keydown|keyboard"],
              ["score", r"score"], ["win condition", r"win"], ["speed increase on hit", r"speed"],
              ["center line", r"center|dashed"], ["reset/serve after point", r"reset|serve"]],
@@ -814,8 +814,8 @@ QA_PROBES = {
             {"type": "key", "key": "ArrowUp", "wait": 250},
             {"type": "key", "key": "w", "wait": 250},
         ],
-        "checks": [{"id": "canvas present", "sel": "canvas", "minCount": 1},
-                   {"id": "canvas animates", "canvasAnimates": True}],
+        "checks": [{"id": "game board present", "sel": "canvas", "minCount": 1},
+                   {"id": "game animates", "canvasAnimates": True, "domAnimates": True}],
         "budget": 9000,
     },
     # CHIP-8 is probed on its REQUIRED self-test panel rather than canvas
@@ -869,7 +869,7 @@ _PROBE_TEMPLATE = """<script id="__qa_probe">
   function snapCanvas() {
     try { var c = $$('canvas')[0]; return c ? c.toDataURL() : null; } catch (e) { return null; }
   }
-  var _qaM1 = null, _qaDone = false;
+  var _qaM1 = null, _qaT1 = null, _qaDone = false;
   function doActions(i) {
     if (i >= CFG.actions.length) { setTimeout(measure, 300); return; }
     var a = CFG.actions[i];
@@ -933,10 +933,16 @@ _PROBE_TEMPLATE = """<script id="__qa_probe">
           res[ck.id] = new RegExp(ck.bodyRegex, 'i').test(document.body.innerText || '');
         } else if (ck.domGrows != null) {
           res[ck.id] = (document.body.innerText || '').length - _qaBaseLen >= ck.domGrows;
-        } else if (ck.canvasAnimates) {
-          // two post-start samples: identical pixels 900ms apart = frozen
-          if (_qaM1 === null) { _qaM1 = snapCanvas(); res[ck.id] = false; }
-          else res[ck.id] = _qaM1 !== snapCanvas();
+        } else if (ck.canvasAnimates || ck.domAnimates) {
+          // liveness: two post-start samples — canvas pixels OR visible text
+          // changed between them means the game is running
+          if (_qaM1 === null) {
+            _qaM1 = snapCanvas();
+            _qaT1 = document.body.innerText;
+            res[ck.id] = false;
+          } else {
+            res[ck.id] = (_qaM1 !== snapCanvas()) || (document.body.innerText !== _qaT1);
+          }
         } else if (ck.sel) {
           res[ck.id] = !!$$(ck.sel).find(function (x) {
             return !ck.text || new RegExp(ck.text, 'i').test(x.textContent || ''); });
