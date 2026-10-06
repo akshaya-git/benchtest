@@ -1848,7 +1848,7 @@ OC_CONFIG_ROOT = os.path.join(ROOT, "harness-configs", "opencode")
 def inline_local_scripts(html, base_dir):
     """Replace <script src="…"> tags with the referenced file's contents when
     that file exists under base_dir (agents routinely emit index.html +
-    app.js; the collected single artifact must carry the JS or QA and the
+    app.js; the collected single artifact must carry the JS or the
     Output button see a shell with no behaviour). Remote, protocol-relative
     and absolute-path srcs are left untouched; paths may not escape base_dir."""
     def _sub(m):
@@ -3173,18 +3173,6 @@ class Handler(BaseHTTPRequestHandler):
             with open(os.path.join(ROOT, "fixtures", fname), encoding="utf-8") as fh:
                 self._json({"task": task, "file": fname, "source": fh.read()})
             return
-        if self.path.startswith("/api/hold"):
-            # same logic as the POST route: a real-time pause the QA probe's
-            # page fetches so async page work completes before grading
-            from urllib.parse import urlparse, parse_qs
-            q = parse_qs(urlparse(self.path).query)
-            try:
-                ms = min(max(int(q.get("ms", ["3000"])[0]), 0), 15000)
-            except ValueError:
-                ms = 3000
-            time.sleep(ms / 1000)
-            self._json({"ok": True, "held_ms": ms})
-            return
         if self.path == "/" or self.path == "/index.html":
             with open(os.path.join(ROOT, "index.html"), "rb") as f:
                 body = f.read()
@@ -3411,18 +3399,6 @@ class Handler(BaseHTTPRequestHandler):
             request_stop()
             log("stop requested — killing in-flight work", level="err")
             self._json({"ok": True})
-        elif self.path.startswith("/api/hold"):
-            # a deliberate real-time pause for the QA probe: virtual time
-            # pauses while this response is pending, giving asynchronous
-            # page work (IndexedDB callbacks) time to finish
-            from urllib.parse import urlparse, parse_qs
-            q = parse_qs(urlparse(self.path).query)
-            try:
-                ms = min(max(int(q.get("ms", ["3000"])[0]), 0), 15000)
-            except ValueError:
-                ms = 3000
-            time.sleep(ms / 1000)
-            self._json({"ok": True, "held_ms": ms})
         if self.path.startswith("/api/relay/"):
             self._relay()
             return
