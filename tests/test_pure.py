@@ -281,7 +281,9 @@ class TestScanFolderModels(unittest.TestCase):
         import tempfile as _t
         from unittest.mock import patch
         with _t.TemporaryDirectory() as root:
-            self._mk(root, "config.json")   # root IS the model
+            # the root itself is a model: config.json is a FILE here
+            with open(os.path.join(root, "config.json"), "w") as f:
+                json.dump({}, f)
             with patch.object(discovery, "dir_size_gb", return_value=5.0):
                 out = server._scan_folder_models(root)
         self.assertEqual(len(out), 1)
