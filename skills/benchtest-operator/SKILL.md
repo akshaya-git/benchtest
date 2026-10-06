@@ -1,13 +1,13 @@
 ---
 name: benchtest-operator
-description: Operate, monitor and debug the benchtest local-LLM benchmark (Apple Silicon; OMLX/MTPLX/MLX-VLM/MLX-Serve × raw/raw+/pi/opencode/Goose/hart). Use when the user asks to run, monitor, compare, rescore or debug benchmark runs, or when benchmark artifacts or logs need triage.
+description: Operate, monitor and debug the benchtest local-LLM benchmark (Apple Silicon; OMLX/MTPLX/MLX-VLM/MLX-Serve × raw/raw+/pi/opencode/Goose/hart). Use when the user asks to run, monitor, compare or debug benchmark runs, or when benchmark artifacts or logs need triage.
 ---
 
 # benchtest operator
 
 Local LLM benchmark on one Mac. A web backend (port 7090) drives framework
 servers (OMXL :7001, MTPLX :7002, MLX-VLM :7003, MLX-Serve :7004), runs agent
-harnesses against them, and grades the produced artifacts.
+harnesses against them, and collects the produced artifacts for review.
 
 ## Mental model
 
@@ -16,8 +16,9 @@ harnesses against them, and grades the produced artifacts.
   Speed build, OMLX gets the 4bit-mtp).
 - **Run** = one task × the selected frameworks × harnesses. Each cell = one
   framework/harness pair. **Campaign** = sets × all tasks, sequential.
-- **QA gate** = regex feature checks (40%) + a headless-Chrome runtime probe
-  (70%) that loads the artifact and exercises it. QA ≥ 90 = usable.
+- **No QA gate** (removed as unreliable): each cell saves its artifact and
+  the dashboard's Open ▸ link is the review surface — the operator judges
+  results by looking at them, not by a score.
 - Tasks: tetris, snake, pong, todo, fib, markdown, agentconsole, logreport
   (analyze the previous run's logs), webdb (single-file app over IndexedDB),
   bugfix (fix 4 planted bugs in a broken app, graded by its self-test).
@@ -28,12 +29,12 @@ harnesses against them, and grades the produced artifacts.
 | Path | What |
 |---|---|
 | `config.json` | frameworks, model_sets, reasoning, ports |
-| `runs/<ts>.json` | one completed run: per-cell status/latency/qa/error |
-| `outputs/<oid>.html` | graded artifacts (referenced by `output_url`) |
+| `runs/<ts>.json` | one completed run: per-cell status/run time/tokens/tps/error |
+| `runs/*-cells.jsonl` | per-cell records appended as each cell FINISHES (crash-safe) |
+| `outputs/<oid>.html` | artifacts (referenced by `output_url`) |
 | `logs/bench.log` | orchestrator log — the forensics source |
 | `logs/<fw>-<ts>.log` | per-framework server logs |
 | `campaign.json` | campaign state (resume/complete/paused) |
-| `rescore.py` | re-grades saved runs with the current gate (no re-runs) |
 
 The backend HTTP API (port 7090): `GET /api/state`, `GET /api/runs_history`,
 `GET /api/frameworks`, `POST /api/run`, `POST /api/stop`,
@@ -54,13 +55,13 @@ The backend HTTP API (port 7090): `GET /api/state`, `GET /api/runs_history`,
      framework server log for whether a request even arrived.
    - OMLX `memory-guard` / `forced to SSD` → model does not fit; check
      resident GB vs the wired ceiling (~121.6 GB on 128 GB machines).
-3. **Read the QA notes**, never just the number: `runtime probe N/M failed: …`
-   names the exact broken behavior; `missing: …` lists requirement gaps.
-4. **Only then change code/settings**, and prefer, in order: probe bug
-   (fix the gate), harness setting, framework flag, model swap. Re-verify by
-   re-probing the artifact before re-running any expensive cell.
-5. **Gate improved?** `python3 rescore.py runs/<file>.json` — artifacts are
-   the ground truth; scores are recomputable without re-running models.
+3. **Open the artifact** (`output_url` → Open ▸ in the dashboard) and judge
+   it yourself: does the game render/animate, does the self-test panel pass,
+   does the console connect? The artifact is the ground truth — there is no
+   score to over-trust.
+4. **Only then change code/settings**, and prefer, in order: harness setting,
+   framework flag, model swap. Re-verify by re-running the single cell, not
+   the whole run.
 
 ## Pitfalls (hard-won rules)
 
@@ -72,9 +73,8 @@ The backend HTTP API (port 7090): `GET /api/state`, `GET /api/runs_history`,
 - pi and opencode cap per-request output (32K); thinking models can exhaust
   that on hard tasks before emitting content — that reads as `empty response`
   and is a cap setting, not a model bug.
-- The QA probe presses Enter/arrow keys and clicks canvas/start buttons, but
-  never Space (pong binds Space to pause). CHIP-8 is graded on its self-test
-  panel, not canvas animation (test ROMs are static).
+- Cells that hit the harness token cap log `finish=length` truncation — a
+  thinking model spent the budget on reasoning; raise the cap or the task's
+  reasoning level, don't blame the framework.
 - A fresh model download must land where each framework reads it: OMLX and
   MLX-VLM/MLX-Serve read the HF cache; **MTPLX only reads `~/.mtplx/models`**.
-- After changing the QA gate, rescore instead of re-running.

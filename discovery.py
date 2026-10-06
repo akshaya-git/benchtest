@@ -172,6 +172,13 @@ def _snapshot_complete(cache_dir):
     return None
 
 
+# public aliases — server.py's extra-path scan shares these instead of
+# duplicating them locally
+dir_size_gb = _dir_size_gb
+file_context = _file_context
+cached_context = _cached_context
+
+
 def discover_local():
     """All repos in the local HF cache, with size + context where known."""
     out = []
@@ -182,6 +189,10 @@ def discover_local():
             continue
         d = os.path.join(HF_CACHE, entry)
         repo = entry[len("models--"):].replace("--", "/")
+        # half-downloaded models (shards missing vs their weight index) must
+        # not be offered as if runnable
+        if _snapshot_complete(d) is False:
+            continue
         size = _snapshot_size_gb(d)
         # skip helper artifacts: draft heads / embedders are not runnable
         # language models (observed: the 0.4 GB MTP-8bit draft head was
@@ -278,8 +289,8 @@ def machine_profile():
 
 _QUANT_TOKENS = re.compile(
     r"(?i)(\d+bit|\d+bit-?mlx|oq\d+e?|bf16|fp16|fp8|int\d+|mlx|mlxl|mtp|optimized|"
-    r"instruct|-it\b|speed|quality|bare|gguf|exl\d|nvfp4|gsq|rcq|heretic|uncensored|"
-    r"turbo|splash|draft|snapshot\d*|heretic)")
+    r"instruct|it\b|speed|quality|bare|gguf|exl\d|nvfp4|gsq|rcq|heretic|uncensored|"
+    r"turbo|splash|draft|snapshot\d*)")
 
 
 def family_for(model_id):
@@ -363,52 +374,6 @@ def compatibility(cand, free_ram_gb, ctx_tokens, machine=None):
         elif machine_fit == "tight":
             reasons.append(f"tight fit: ~{need} GB vs {cap} GB usable")
     return {"verdict": verdict, "reasons": reasons, "machine_fit": machine_fit}
-
-
-def candidates_for(fw_cfg, free_ram_gb, machine=None):
-    """Merged, de-duplicated candidate list for one framework, each with a
-    compatibility verdict. Served models first (they are what the running
-    server can actually answer with right now)."""
-    port = fw_cfg.get("port")
-    ctx_tokens = fw_cfg.get("ctx_tokens")
-    local = discover_local()
-    local_ids = [m["id"] for m in local]
-    by_key = {}
-    for m in local:
-        by_key[normalize_key(m["id"])] = dict(m)
-    if port:
-        for m in discover_served(port):
-            k = normalize_key(m["id"])
-            e = by_key.get(k, dict(m))
-            # merge served facts but keep the repo-style id for display
-            for key, val in m.items():
-                if val is not None and key != "id":
-                    e[key] = val
-            by_key[k] = e
-    # Also surface the configured model even if neither source lists it
-    # (e.g. MTPLX serves a normalized id whose repo is cached under another name).
-    cur = fw_cfg.get("model")
-    if cur and normalize_key(cur) not in by_key:
-        repo = fw_cfg.get("repo") or cur
-        d = cache_dirname(repo)
-        by_key[normalize_key(cur)] = {
-            "id": cur, "served": False,
-            "in_cache": d is not None,
-            "size_gb": _snapshot_size_gb(d) if d else fw_cfg.get("model_gb"),
-            "context_length": _cached_context(d) if d else None,
-        }
-    out = []
-    for m in by_key.values():
-        c = compatibility(m, free_ram_gb, ctx_tokens, machine)
-        m["compat"] = c
-        m["mtp_draft"] = mtp_draft_for(m["id"], local_ids)
-        m["family"] = family_for(m["id"])
-        out.append(m)
-    # served first, then ready, then the rest; stable by id
-    rank = {"ready": 0, "tight": 1, "unknown": 2, "too-large": 3}
-    out.sort(key=lambda m: (0 if m.get("served") else 1,
-                            rank.get(m["compat"]["verdict"], 9), m["id"]))
-    return out
 
 
 def all_candidates(free_ram_gb, frameworks, machine=None):

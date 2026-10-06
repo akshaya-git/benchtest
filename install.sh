@@ -8,13 +8,14 @@
 #
 # Usage:  ./install.sh
 #
-set -u
+set -u   # not -e: this is a check-and-report script
 
 cd "$(dirname "$0")"
 
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$1"; }
 warn() { printf '  \033[33m⚠\033[0m %s\n' "$1"; }
-fail() { printf '  \033[31m✗\033[0m %s\n' "$1"; }
+fail() { printf '  \033[31m✗\033[0m %s\n' "$1"; FAILURES=$((FAILURES + 1)); }
+FAILURES=0
 
 have() { command -v "$1" >/dev/null 2>&1; }
 
@@ -89,8 +90,11 @@ mkdir -p runs outputs logs work harness-configs 2>/dev/null
 ok "runtime dirs ready (runs/ outputs/ logs/ work/ harness-configs/)"
 
 # --- Optional: MCP server venv (benchtest tools for ZCode / other hosts) ---
-if python3 -m venv mcp/venv 2>/dev/null; then
-  if mcp/venv/bin/pip install --quiet mcp 2>/dev/null; then
+if [ -x mcp/venv/bin/python ]; then
+  ok "mcp/venv already present (python3 scripts/register_mcp.py to register)"
+elif python3 -m venv mcp/venv 2>/dev/null; then
+  # pinned in mcp/requirements.txt so an SDK major can't shift under us
+  if mcp/venv/bin/pip install --quiet -r mcp/requirements.txt 2>/dev/null; then
     ok "mcp venv ready (python3 scripts/register_mcp.py to register with ZCode)"
   else
     warn "mcp venv created but the 'mcp' package failed to install (optional)"
@@ -106,4 +110,6 @@ echo "    1. Edit config.json  (models, ports, start_cmd per framework)"
 echo "    2. python3 server.py            (or: make run)"
 echo "    3. Open http://localhost:7090"
 echo
-exit 0
+# warnings are advisory (optional components); FAILURES are hard misses and
+# make the script exit nonzero so CI can catch them
+exit $((FAILURES > 0))

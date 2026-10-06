@@ -1,8 +1,9 @@
 # benchtest MCP server
 
 Exposes the benchmark to any MCP host (ZCode, Claude Desktop, ...) as tools:
-live state, run history, run comparison, bench/framework log tails, artifact
-QA re-probing, rescoring, campaign start/stop.
+live state, run history, run comparison, bench/framework log tails and
+campaign start/stop. Artifact quality is judged by humans from the
+dashboard's Open links — there is no automated scoring.
 
 Pure HTTP client of the backend (host/port from config.json) — no benchtest imports, so
 it never touches the benchmark's config state.
@@ -23,9 +24,9 @@ The bench URL is read from `config.json` (host + port) at startup;
 override with the `BENCHTEST_URL` environment variable.
 
 Tools marked MUTATES in their description change benchmark state
-(start_campaign, stop_run, rescore_run); everything else is read-only.
+(start_campaign, stop_run); everything else is read-only.
 
 
 ```
-cd mcp && venv/bin/python ../tests/mcp_smoke.py        # list tools + live calls
+mcp/venv/bin/python tests/mcp_monitor.py    # from the repo root: live pass
 ```

@@ -222,6 +222,24 @@ class TestTasks(unittest.TestCase):
                             f"fixture for {task!r} missing: {path}")
 
 
+class TestNewestHtml(unittest.TestCase):
+    def test_newer_stub_does_not_hide_real_artifact(self):
+        # P0-4 regression: only the newest .html was plausibility-checked, so
+        # a stray stub newer than the real artifact failed a built cell
+        import tempfile as _t
+        with _t.TemporaryDirectory() as d:
+            real = os.path.join(d, "app.html")
+            with open(real, "w") as f:
+                f.write("<!DOCTYPE html><html><body>" + "x" * 200
+                        + "</body></html>")
+            os.utime(real, (1000, 1000))
+            stub = os.path.join(d, "zz_stub.html")
+            with open(stub, "w") as f:
+                f.write("<html>stub</html>")
+            os.utime(stub, (2000, 2000))
+            self.assertEqual(server.newest_html(d, 0), real)
+
+
 class TestPersistenceHelpers(unittest.TestCase):
     def test_atomic_write_json_roundtrip(self):
         with tempfile.TemporaryDirectory() as d:

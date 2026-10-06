@@ -192,7 +192,6 @@ DEFAULT_CONFIG = {
                 }
             }
         },
-    "hart_path": os.path.join(ROOT, "hart", "hart.py"),
     "frameworks": DEFAULT_FRAMEWORKS,
 }
 
@@ -212,6 +211,23 @@ def _merge_config(base, override):
         else:
             out[k] = v
     return out
+
+
+def _atomic_write_json(path, data):
+    """tempfile + os.replace: a crash mid-write can never truncate the
+    user's global settings file."""
+    d = os.path.dirname(path) or "."
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".benchtest-tmp-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def load_config():
@@ -251,8 +267,7 @@ def load_config():
 def save_config():
     """Persist the live config (e.g. after a model selection) to config.json."""
     try:
-        with open(CONFIG_PATH, "w") as f:
-            json.dump(CONFIG, f, indent=2)
+        _atomic_write_json(CONFIG_PATH, CONFIG)
         return True
     except OSError as e:
         log(f"could not save config.json: {e}", level="err")
@@ -260,6 +275,11 @@ def save_config():
 
 
 CONFIG = load_config()
+# portability: a hart_path that just points at this checkout's default must
+# not persist as an absolute path (a config.json copied elsewhere breaks)
+if CONFIG.get("hart_path") and os.path.abspath(CONFIG["hart_path"]) == \
+        os.path.join(ROOT, "hart", "hart.py"):
+    CONFIG.pop("hart_path", None)
 FRAMEWORKS = CONFIG["frameworks"]
 
 
@@ -406,8 +426,7 @@ def _campaign_load():
 
 def _campaign_save(c):
     try:
-        with open(CAMPAIGN_FILE, "w") as f:
-            json.dump(c, f, indent=2)
+        _atomic_write_json(CAMPAIGN_FILE, c)
     except OSError as e:
         log(f"could not save campaign state: {e}", level="err")
 
@@ -431,7 +450,8 @@ def campaign_runner(mode, sets, resume_index=0, harnesses=None):
             "harnesses": harnesses,
             "plan_total": len(plan), "index": resume_index,
             "current": None, "started": time.time(), "skipped": []}
-    STATE["campaign"] = dict(camp)
+    with LOCK:
+        STATE["campaign"] = dict(camp)
     _campaign_save(camp)
     RUN_FLAG.set()
     log(f"campaign running: {mode} · {len(plan) - resume_index} of "
@@ -444,7 +464,8 @@ def campaign_runner(mode, sets, resume_index=0, harnesses=None):
                 raise RunStopped()
             camp["index"] = i
             camp["current"] = f"{step['set']} · {step['task_id']}"
-            STATE["campaign"] = dict(camp)
+            with LOCK:
+                STATE["campaign"] = dict(camp)
             _campaign_save(camp)
             apply_model_set(step["set"])
             frameworks = [fw for fw, c in FRAMEWORKS.items()
@@ -473,21 +494,24 @@ def campaign_runner(mode, sets, resume_index=0, harnesses=None):
                      "completed": time.time()})
         if skipped:
             camp["skipped"] = skipped
-        STATE["campaign"] = dict(camp)
+        with LOCK:
+            STATE["campaign"] = dict(camp)
         _campaign_save(camp)
         log(f"campaign complete: {len(plan)} runs", level="ok")
     except RunStopped:
         camp.update({"active": False, "status": "paused", "index": i,
                      "current": f"{plan[i]['set']} · {plan[i]['task_id']}"
                      if i < len(plan) else None})
-        STATE["campaign"] = dict(camp)
+        with LOCK:
+            STATE["campaign"] = dict(camp)
         _campaign_save(camp)
         log(f"campaign paused at run {i + 1}/{len(plan)} — resume from the "
             f"dashboard", level="err")
     except Exception as e:
         camp.update({"active": False, "status": "failed",
                      "error": str(e)[:300], "index": i})
-        STATE["campaign"] = dict(camp)
+        with LOCK:
+            STATE["campaign"] = dict(camp)
         _campaign_save(camp)
         log(f"campaign failed: {e}", level="err")
 
@@ -722,7 +746,7 @@ PI_THINKING = CONFIG.get("pi_thinking", "")
 # framework maps a level to its own CLI flags via reasoning_flags, or to the
 # omlx settings file via reasoning_file). LONG tasks get a bigger thinking
 # budget than standard tasks.
-REASONING_LEVELS = CONFIG.get("reasoning") or {"short": "low", "long": "medium"}
+REASONING_LEVELS = CONFIG.get("reasoning") or {"short": "low", "long": "low"}
 
 
 def reasoning_level_for(task_id):
@@ -1069,14 +1093,21 @@ def server_cell_delta(fw, before, after):
         dttft = after["ttft_s"] - before["ttft_s"]
         dtn = after["ttft_n"] - before["ttft_n"]
         if dp > 0 and dpre > 0.01:
-            out["server_pp"] = round(dp / dpre, 1)
+            pp = dp / dpre
+            out["server_pp"] = round(pp, 1)
+            if pp > 10000:
+                out["server_pp_flagged"] = True   # same clamp policy as omlx
         if dc > 0 and dgen > 0.01:
-            out["server_tgs"] = round(dc / dgen, 1)
+            tgs = dc / dgen
+            out["server_tgs"] = round(tgs, 1)
+            if tgs > 500:
+                out["server_tgs_flagged"] = True
         if dtn > 0 and dttft > 0:
             out["server_ttft_avg"] = round(dttft / dtn, 3)
         out["server_prompt_tokens"] = dp
         out["server_completion_tokens"] = dc
-        out["server_cached_tokens"] = after["cache"] - before["cache"]
+        # counters can reset mid-cell — a negative delta is noise, not cache
+        out["server_cached_tokens"] = max(after["cache"] - before["cache"], 0)
     elif before["kind"] == "mlxvlm":
         fresh = _fresh_requests(before["recent"], after["recent"])
         pp, pp_m = _weighted_rate(fresh, ("prefill_tok_s",),
@@ -1532,29 +1563,13 @@ def _jsonl_cell(row):
         if _RUN_JSONL["path"] is None:
             os.makedirs(RUNS_DIR, exist_ok=True)
             _RUN_JSONL["path"] = os.path.join(
-                RUNS_DIR, time.strftime("%Y%m%d-%H%M%S") + "-cells.jsonl")
+                RUNS_DIR, time.strftime("%Y%m%d-%H%M%S")
+                + "-" + uuid.uuid4().hex[:6] + "-cells.jsonl")
         with open(_RUN_JSONL["path"], "a", encoding="utf-8") as f:
             f.write(json.dumps({k: v for k, v in row.items() if k != "_text"},
                                default=str) + "\n")
     except OSError:
         pass
-
-
-def _atomic_write_json(path, data):
-    """tempfile + os.replace: a crash mid-write can never truncate the
-    user's global settings file."""
-    d = os.path.dirname(path) or "."
-    fd, tmp = tempfile.mkstemp(dir=d, prefix=".benchtest-tmp-")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-        os.replace(tmp, path)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
 
 
 def omlx_reasoning_apply(fw, level):
@@ -1788,6 +1803,11 @@ def stop_framework(fw):
         proc = PROCS.pop(fw, None)
         logf = FW_LOGS.pop(fw, None)
         FW_REASONING.pop(fw, None)
+    if logf not in (None, subprocess.DEVNULL):
+        try:
+            logf.close()   # DEVNULL is an int — never .close() it
+        except OSError:
+            pass
     if proc and proc.poll() is None:
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
@@ -1820,14 +1840,20 @@ def stop_framework(fw):
                 os.kill(int(pid), signal.SIGTERM)
             except (ValueError, ProcessLookupError, PermissionError):
                 pass
-        try:
-            # anchored: "port 700" must not match "port 7001" in someone's argv
-            subprocess.run(["pkill", "-9", "-f",
-                            rf"port {cfg['port']}([^0-9]|$)"],
-                           capture_output=True, timeout=10)
-        except Exception:
-            pass
         time.sleep(2)
+        if port_open(cfg["port"]):
+            # TERM didn't take — KILL the listener it still names (never a
+            # pkill by argv substring: "port 7001" can appear in an
+            # unrelated process's command line, anchored or not)
+            pids = subprocess.run(["lsof", "-tiTCP:" + str(cfg["port"]),
+                                   "-sTCP:LISTEN"],
+                                  capture_output=True, text=True).stdout.split()
+            for pid in pids:
+                try:
+                    os.kill(int(pid), signal.SIGKILL)
+                except (ValueError, ProcessLookupError, PermissionError):
+                    pass
+            time.sleep(1)
         if port_open(cfg["port"]):
             log(f"⚠ {cfg['name']} port {cfg['port']} STILL answering after "
                 f"pre-existing-server stop", fw=fw, level="err")
@@ -2068,7 +2094,7 @@ def inline_local_scripts(html, base_dir):
 def newest_html(workdir, since):
     """Newest .html file an agent harness created during its run (agents
     like opencode/pi write artifacts to disk instead of answering in chat)."""
-    best = None
+    cands = []
     for dirpath, dirnames, filenames in os.walk(workdir):
         dirnames[:] = [d for d in dirnames if not d.startswith(".")]
         for fn in filenames:
@@ -2078,17 +2104,19 @@ def newest_html(workdir, since):
             try:
                 mt = os.path.getmtime(p)
             except OSError:
-                continue
-            if mt >= since and (best is None or mt > best[0]):
-                best = (mt, p)
-    # Prefer the newest plausible artifact; ignore stray/stub html files.
-    if best:
+                continue   # one vanishing file must not abort the scan
+            if mt >= since:
+                cands.append((mt, p))
+    # newest-first until one is PLAUSIBLE: a stray stub newer than the real
+    # artifact (observed) used to make this return None and fail a cell
+    # that had actually built the app
+    for _mt, p in sorted(cands, reverse=True):
         try:
-            with open(best[1], encoding="utf-8", errors="replace") as f:
+            with open(p, encoding="utf-8", errors="replace") as f:
                 if plausible_html(f.read(20000)):
-                    return best[1]
+                    return p
         except OSError:
-            return None
+            continue
     return None
 
 
@@ -2254,8 +2282,6 @@ def harness_stream_format(line, harness=""):
         tok = (part.get("tokens") or {})
         return (f"⟳ step {part.get('reason')} · "
                 f"in {tok.get('input', '?')} / out {tok.get('output', '?')} tok")
-    if t in ("step_start",):
-        return None
     return None
 
 
@@ -2493,6 +2519,10 @@ def rawplus_generate(fw, prompt, settings, on_progress=None):
             if cut:
                 chunk = chunk[cut:]
         buffer += chunk
+        if trunc and not chunk:
+            log("raw+ continuation returned no text — stopping rounds",
+                fw=FRAMEWORKS[fw]["name"], harness="raw+", level="err")
+            break
         total_ctok += ntok
         total_ptok += met.get("prompt_tokens") or 0
         decode_s += max((met.get("wall") or 0) - (met.get("ttft") or 0), 0.01)
@@ -2923,7 +2953,7 @@ def run_harness(fw, harness, task_name, prompt, settings, task=None):
                             "tokens": 0, "tps": 0.0,
                             "error": f"timeout after {CLI_TIMEOUT}s{extra}"}
             elif rc != 0:
-                err = (errtext or out or "no output").strip()[-300:]
+                err = (out or "no output").strip()[-300:]
                 if artifact:
                     # The agent finished the task (file delivered) but a
                     # later call failed — keep the artifact, don't fail.
@@ -3244,7 +3274,9 @@ def run_benchmark(req):
         if any(r["status"] == "done" for r in rows):
             try:
                 os.makedirs(RUNS_DIR, exist_ok=True)
-                fname = os.path.join(RUNS_DIR, time.strftime("%Y%m%d-%H%M%S") + ".json")
+                fname = os.path.join(
+                    RUNS_DIR, time.strftime("%Y%m%d-%H%M%S")
+                    + "-" + uuid.uuid4().hex[:6] + ".json")
                 with open(fname, "w") as f:
                     json.dump({"ts": time.time(), "task_id": task_id,
                                "task_name": task_name,
@@ -3272,7 +3304,7 @@ def run_benchmark(req):
 # HTTP
 # ----------------------------------------------------------------------------
 def _scan_models_payload(store_filter=None, extra=None):
-    """Scan payload shared by the /api/models/scan route and model/select."""
+    """Scan payload for the /api/models/scan route."""
     machine = discovery.machine_profile()
     free, _total = available_ram()
     free_gb = round(free / 1073741824, 1)
@@ -3284,8 +3316,8 @@ def _scan_models_payload(store_filter=None, extra=None):
                 continue
             cands.append({
                 "id": entry, "store": "custom", "custom_path": d,
-                "size_gb": _dir_size_gb_local(d),
-                "context_length": _ctx_local(os.path.join(d, "config.json")),
+                "size_gb": discovery.dir_size_gb(d),
+                "context_length": discovery.file_context(os.path.join(d, "config.json")),
                 "frameworks": ["mlxlm", "mlxserve"],
                 "in_cache": False, "served": False,
             })
@@ -3321,31 +3353,6 @@ def _scan_models_payload(store_filter=None, extra=None):
     return {"machine": machine, "free_gb": free_gb, "models": models_out,
             "family_frameworks": {fam: sorted(fws)
                                   for fam, fws in fam_fw.items()}}
-
-
-def _dir_size_gb_local(d):
-    total = 0
-    for dirpath, _dn, filenames in os.walk(d):
-        for fn in filenames:
-            try:
-                total += os.path.getsize(os.path.join(dirpath, fn))
-            except OSError:
-                pass
-    return round(total / 1073741824, 1) if total else None
-
-
-def _ctx_local(path):
-    try:
-        with open(path) as f:
-            cfg = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return None
-    for node in (cfg, cfg.get("text_config") or {}):
-        if isinstance(node, dict):
-            v = node.get("max_position_embeddings") or node.get("seq_len")
-            if isinstance(v, int) and v > 0:
-                return v
-    return None
 
 
 
@@ -3395,15 +3402,12 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
-        if hasattr(self, "_route_options"):
-            self._safe(self._route_options)
-        else:
-            self.send_response(204)
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.send_header("Access-Control-Allow-Headers", "*")
-            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-            self.send_header("Content-Length", "0")
-            self.end_headers()
+        # non-relay OPTIONS stay CORS-header-free on purpose: the dashboard
+        # is same-origin, and blanket preflight approval is exactly what a
+        # drive-by page would need to reach the mutating endpoints
+        self.send_response(204)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
     def do_GET(self):
         self._safe(self._route_get)
@@ -3559,7 +3563,7 @@ class Handler(BaseHTTPRequestHandler):
                             "estimate": CAMPAIGN_ESTIMATES.get(name, "?")}
                      for name in sets}
             both = {"runs": sum(p["runs"] for p in plans.values()),
-                    "estimate": CAMPAIGN_ESTIMATES.get("both", "5–7 days")}
+                    "estimate": "5–7 days"}
             self._json({"campaign": c, "sets": plans, "both": both,
                         "active_set": CONFIG.get("model_set")})
         elif self.path == "/api/frameworks":
@@ -3644,80 +3648,12 @@ class Handler(BaseHTTPRequestHandler):
                 return
             threading.Thread(target=run_benchmark, args=(req,), daemon=True).start()
             self._json({"ok": True})
-        elif self.path == "/api/model/select":
-            # MODEL-FIRST selection: one model -> the frameworks that can serve
-            # it are enabled, everything else is marked unavailable.
-            with LOCK:
-                if STATE.get("running"):
-                    raise ValueError("a run is in progress — Stop it before changing models")
-            model = str((req or {}).get("model") or "")
-            store = str((req or {}).get("store") or "hf")
-            if not model:
-                raise ValueError("model required")
-            payload = _scan_models_payload()
-            entry = next((mm for mm in payload["models"] if mm["id"] == model), None)
-            if entry is None:
-                raise ValueError("model %r not found in the scanned stores" % model)
-            if entry.get("machine_fit") == "wont-fit":
-                raise ValueError(
-                    "%s needs ~%s GB but this machine has ~%s GB usable -- pick a "
-                    "smaller quant of the same family" % (model, entry.get("need_gb"),
-                    payload["machine"].get("usable_gb")))
-            fws = entry.get("frameworks") or []
-            if not fws:
-                raise ValueError("no benchmark framework can serve %r" % model)
-            for fw, c in FRAMEWORKS.items():
-                c["model_available"] = fw in fws
-                if fw in fws:
-                    c["model"] = (model.replace("/", "--")
-                                  if fw == "omlx" else model)
-                    c["repo"] = model
-                    if entry.get("context_length"):
-                        c["ctx_tokens"] = min(entry["context_length"], 131072)
-            set_name = "selected"
-            # store the per-framework ids (OMLX cache-style) so the later
-            # apply_model_set() re-application keeps the servable form
-            CONFIG["model_sets"][set_name] = {
-                "label": "Selected - " + model.split("/")[-1],
-                "group": "Selected",
-                "ctx_tokens": FRAMEWORKS[fws[0]].get("ctx_tokens"),
-                "max_tokens": FRAMEWORKS[fws[0]].get("max_tokens", 65536),
-                "models": {fw: FRAMEWORKS[fw]["model"] for fw in fws}}
-            CONFIG["selected_model"] = {"id": model, "store": store}
-            apply_model_set(set_name)
-            self._json({"ok": True, "model": model, "frameworks": fws,
-                        "set": set_name, "machine": payload["machine"]})
         elif self.path == "/api/stop":
             request_stop()
             log("stop requested — killing in-flight work", level="err")
             self._json({"ok": True})
         elif self.path.startswith("/api/relay/"):
             self._relay()
-        elif self.path == "/api/models/select":
-            with LOCK:
-                if STATE.get("running"):
-                    raise ValueError("a run is in progress — Stop it before changing models")
-            fw = req.get("fw") if isinstance(req, dict) else None
-            model = req.get("model") if isinstance(req, dict) else None
-            if fw not in FRAMEWORKS:
-                raise ValueError(f"unknown framework: {fw}")
-            if not isinstance(model, str) or not model.strip():
-                raise ValueError("model: non-empty string required")
-            cfg = FRAMEWORKS[fw]
-            model = model.strip()
-            cfg["model"] = model
-            # MTPLX: the CLI --model flag loads by repo id from ~/.mtplx/models,
-            # but the server serves a normalized id (auto-adopted on start). Track
-            # the repo separately so start_cmd's {repo} placeholder resolves right.
-            if cfg.get("model_source") == "mtplx":
-                cfg["repo"] = model
-            for key, cast in (("ctx_tokens", int), ("model_gb", float)):
-                if isinstance(req.get(key), (int, float)) and req[key] > 0:
-                    cfg[key] = cast(req[key])
-            if not save_config():
-                raise ValueError("model updated in memory but config.json save failed")
-            log(f"model for {cfg['name']} set to {cfg['model']}", fw=fw, level="ok")
-            self._json({"ok": True, "model": cfg["model"]})
         elif self.path == "/api/campaign":
             action = (req or {}).get("action")
             camp = STATE.get("campaign") or {}
@@ -3822,7 +3758,7 @@ class Handler(BaseHTTPRequestHandler):
                     cfg["repo"] = model
                     cfg["model_available"] = True
                     cache = discovery.cache_dirname(model)
-                    declared = discovery._cached_context(cache) if cache else None
+                    declared = discovery.cached_context(cache) if cache else None
                     if declared and declared < (cfg.get("ctx_tokens") or 0):
                         cfg["ctx_tokens"] = declared   # model's native window wins
                     # NOTE: no live-server id adoption here — adopting would

@@ -1,3 +1,5 @@
+# Fixture for the codereview task — the defects in this file are
+# INTENTIONALLY planted; do not "fix" or lint-exclude the file itself.
 """User service module for the shop backend.
 
 Provides user lookup, tagging, pricing, config loading and reporting.
