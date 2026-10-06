@@ -28,12 +28,14 @@ def ensure_venv():
     print("creating mcp/venv (one-time)…")
     subprocess.run([sys.executable, "-m", "venv",
                     os.path.join(ROOT, "mcp", "venv")], check=True)
-    subprocess.run([VENV_PY, "-m", "pip", "install", "--quiet", "mcp"],
+    subprocess.run([VENV_PY, "-m", "pip", "install", "--quiet", "-r",
+                   os.path.join(ROOT, "mcp", "requirements.txt")],
                    check=True)
 
 
 def register(remove=False):
-    ensure_venv()
+    if not remove:
+        ensure_venv()   # unregistering must not create a venv just to delete
     os.makedirs(os.path.dirname(ZCODE_CONFIG), exist_ok=True)
     cfg = {}
     if os.path.isfile(ZCODE_CONFIG):
@@ -48,8 +50,16 @@ def register(remove=False):
             "command": VENV_PY,                 # absolute, computed here
             "args": [SERVER],                   # absolute, computed here
         }
-    with open(ZCODE_CONFIG, "w") as f:
+    # atomic write with a one-generation backup: this file holds the user's
+    # other MCP servers too — a truncated write must not lose them
+    backup = ZCODE_CONFIG + ".benchtest-bak"
+    if os.path.isfile(ZCODE_CONFIG):
+        import shutil
+        shutil.copy2(ZCODE_CONFIG, backup)
+    tmp = ZCODE_CONFIG + ".tmp"
+    with open(tmp, "w") as f:
         json.dump(cfg, f, indent=2)
+    os.replace(tmp, ZCODE_CONFIG)
     print(("removed" if remove else "registered") + " benchtest in",
           ZCODE_CONFIG)
     if not remove:

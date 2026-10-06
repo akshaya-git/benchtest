@@ -491,7 +491,7 @@ function showRowDetail(r) {
   if (r.status === 'error') why.push('The cell errored before producing a result.');
   if (r.error) why.push('Error: ' + r.error);
   if (r.truncated) why.push('The reply hit the max_tokens cap and was cut off mid-generation.');
-  if (!why.length && r.status === 'done') why.push('The cell completed and passed the quality gate.');
+  if (!why.length && r.status === 'done') why.push('The cell completed — open the artifact to judge the result.');
   openModal(`Cell detail — ${r.framework || '?'} / ${r.harness || '?'}`,
     `<div style="font-size:12.5px;line-height:1.9">
       ${row('Task', r.task)}${row('Model', r.model)}${row('Status', r.status)}

@@ -18,7 +18,10 @@ run:
 	@$(PY) server.py $(PORT)
 
 check:
-	@$(PY) -m py_compile server.py discovery.py && echo "syntax OK"
+	@$(PY) -m py_compile server.py discovery.py mcp/benchtest_mcp.py \
+		scripts/register_mcp.py tests/mcp_monitor.py tests/test_pure.py \
+		&& echo "syntax OK"
+	@$(PY) -m unittest tests.test_pure -v 2>&1 | tail -3
 
 clean:
 	@rm -rf runs outputs logs work harness-configs/*

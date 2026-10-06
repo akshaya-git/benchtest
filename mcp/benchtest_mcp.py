@@ -36,9 +36,10 @@ mcp = MCPServer(
     name="benchtest",
     instructions=(
         "Tools for operating the benchtest local-LLM benchmark: live state, "
-        "run history, run comparison, log tails, artifact re-probing, "
-        "rescoring and campaign control. Read tools are always safe; the "
-        "control tools (start_campaign, stop_run) mutate the "
+        "run history, run comparison, log tails and campaign control. "
+        "Artifact quality is judged by the human from the dashboard's Open "
+        "links — there is no automated scoring. Read tools are always safe; "
+        "the control tools (start_campaign, stop_run) mutate the "
         "benchmark and say so in their descriptions."
     ),
 )
@@ -63,7 +64,7 @@ def _post(path, body, timeout=30):
 @mcp.tool()
 def bench_state() -> str:
     """Live benchmark state: is a run or campaign active, which cell is
-    executing, per-cell status/QA of the current run, RAM, framework health."""
+    executing, per-cell status/run time/TPS of the current run, RAM, framework health."""
     d = _get("/api/state")
     c = d.get("campaign") or {}
     out = {
@@ -73,7 +74,7 @@ def bench_state() -> str:
                      ("status", "sets", "index", "plan_total", "current", "skipped")},
         "results": [
             {k: r.get(k) for k in ("framework", "harness", "status",
-                                   "qa_func", "latency", "error", "output_url")}
+                                   "tps", "latency", "error", "output_url")}
             for r in (d.get("results") or [])
         ],
     }
@@ -82,22 +83,22 @@ def bench_state() -> str:
 
 @mcp.tool()
 def list_runs(limit: int = 10) -> str:
-    """Recent benchmark runs from history: task, model set, pass/fail counts,
-    best cell. Set limit larger to see everything."""
+    """Recent benchmark runs from history: task, model set, done/error
+    counts, fastest cell. Set limit larger to see everything."""
     runs = _get("/api/runs_history")
     out = []
     for r in runs[:limit]:   # runs_history is newest-first
         rows = r.get("rows") or []
         done = [x for x in rows if x.get("status") == "done"]
         failed = [x for x in rows if x.get("status") == "error"]
-        best = max(done, key=lambda x: (x.get("qa_func") or 0), default=None)
+        best = max(done, key=lambda x: (x.get("tps") or 0), default=None)
         out.append({
             "file": r.get("file"), "task": r.get("task"),
             "model_set": r.get("model_set"),
             "date": r.get("ts"), "cells": len(rows),
             "done": len(done), "failed": len(failed),
             "best": (f"{best.get('framework')}/{best.get('harness')} "
-                     f"QA {best.get('qa_func')}%") if best else None,
+                     f"{best.get('tps')} tok/s") if best else None,
         })
     return json.dumps(out, indent=1)
 
@@ -105,16 +106,16 @@ def list_runs(limit: int = 10) -> str:
 @mcp.tool()
 def get_run(run_file: str) -> str:
     """Full per-cell records of one saved run (pass runs/20260930-140000.json
-    as run_file — the file part is enough). Includes error strings and the
-    QA notes that explain every score."""
+    as run_file — the file part is enough). Includes run time, tokens, TPS
+    and error strings; artifacts are reviewed by humans via output_url."""
     f = os.path.join(ROOT, "runs", os.path.basename(run_file))
     if not f.endswith(".json"):
         f += ".json"
     with open(f) as fh:
         d = json.load(fh)
     rows = [{k: r.get(k) for k in ("framework", "harness", "status", "latency",
-                                   "tps", "qa_func", "qa_notes", "usable",
-                                   "error", "req_missing")}
+                                   "tokens", "tps", "truncated",
+                                   "tokens_estimated", "error", "output_url")}
             for r in (d.get("results") or [])]
     return json.dumps({"task": d.get("task_id"), "model_set": d.get("model_set"),
                        "reasoning": d.get("reasoning_level"), "rows": rows}, indent=1)
@@ -123,7 +124,7 @@ def get_run(run_file: str) -> str:
 @mcp.tool()
 def compare_runs(run_a: str, run_b: str) -> str:
     """Side-by-side comparison of two saved runs: per framework/harness pair,
-    the QA score, latency and status from each run. Pass file-name parts of
+    TPS, run time and status from each run. Pass file-name parts of
     two runs that ran the SAME task for a fair model or harness comparison."""
     def load(name):
         f = os.path.join(ROOT, "runs", os.path.basename(name))
@@ -141,9 +142,9 @@ def compare_runs(run_a: str, run_b: str) -> str:
         o = index.get(key, {})
         rows.append({
             "framework": key[0], "harness": key[1],
-            "A": {"task": a.get("task_id"), "qa": r.get("qa_func"),
+            "A": {"task": a.get("task_id"), "tps": r.get("tps"),
                   "latency": r.get("latency"), "status": r.get("status")},
-            "B": {"task": b.get("task_id"), "qa": o.get("qa_func"),
+            "B": {"task": b.get("task_id"), "tps": o.get("tps"),
                   "latency": o.get("latency"), "status": o.get("status")},
         })
     return json.dumps(rows, indent=1)
@@ -168,6 +169,9 @@ def framework_log(framework: str, lines: int = 60, only_errors: bool = True) -> 
     """Tail a framework server log (omlx, mtplx, mlxlm, mlxserve) — newest
     file for that framework. Server-side errors (memory guard, stream-stall
     breaks, load failures) show up here, not in bench.log."""
+    framework = (framework or "").strip().lower()
+    if framework not in ("omlx", "mtplx", "mlxlm", "mlxserve"):
+        return "framework must be one of: omlx, mtplx, mlxlm, mlxserve"
     hits = sorted(glob.glob(os.path.join(ROOT, "logs", f"{framework}-*.log")),
                   key=os.path.getmtime)
     if not hits:
@@ -185,14 +189,14 @@ def framework_log(framework: str, lines: int = 60, only_errors: bool = True) -> 
 
 
 @mcp.tool()
-def start_campaign(sets: list[str], harnesses: list[str] = []) -> str:
+def start_campaign(sets: list[str], harnesses: list[str] | None = None) -> str:
     """MUTATES STATE: start a benchmark campaign over whole tasks — sets is a
     list of model-set names ('qwen38-27b', 'flash-next'), harnesses defaults
     to all six (raw, rawplus, pi, opencode, goose, hart). Refuses if a run
     or campaign is already active."""
     return json.dumps(_post("/api/campaign",
                             {"action": "start", "mode": "all", "sets": sets,
-                             "harnesses": harnesses}))
+                             "harnesses": harnesses or []}))
 
 
 @mcp.tool()

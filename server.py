@@ -21,23 +21,27 @@ import signal
 import socket
 import subprocess
 import sys
+import atexit
 import tempfile
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import discovery
 
+STARTUP = os.environ.get("BENCHTEST_NO_STARTUP") != "1"   # tests import cold
 ROOT = os.path.dirname(os.path.abspath(__file__))
 OUTPUT_DIR = os.path.join(ROOT, "outputs")
 LOG_DIR = os.path.join(ROOT, "logs")
 WORK_DIR = os.path.join(ROOT, "work")
 RUNS_DIR = os.path.join(ROOT, "runs")
-for _d in (OUTPUT_DIR, LOG_DIR, WORK_DIR, RUNS_DIR):
-    os.makedirs(_d, exist_ok=True)
+if STARTUP:
+    for _d in (OUTPUT_DIR, LOG_DIR, WORK_DIR, RUNS_DIR):
+        os.makedirs(_d, exist_ok=True)
 
 CONFIG_PATH = os.path.join(ROOT, "config.json")
 CONFIG_EXAMPLE = os.path.join(ROOT, "config.example.json")
@@ -221,15 +225,23 @@ def load_config():
         except (json.JSONDecodeError, OSError) as e:
             print(f"⚠ config.json unreadable ({e}) — using built-in defaults",
                   flush=True)
+    elif STARTUP:
+        pass   # cold import (tests): never write anything at import time
     else:
         try:
             src = CONFIG_EXAMPLE if os.path.isfile(CONFIG_EXAMPLE) else None
             if src:
-                with open(src) as f:
-                    with open(CONFIG_PATH, "w") as out:
-                        out.write(f.read())
+                with open(src, encoding="utf-8") as f:
+                    example = f.read()
+                with open(CONFIG_PATH, "w", encoding="utf-8") as out:
+                    out.write(example)
+                # return the EXAMPLE's values too — the module-level
+                # apply_model_set/save_config that follows used to overwrite
+                # the just-seeded file with built-in defaults, discarding
+                # the example's models/start commands on a bare first run
+                cfg = _merge_config(cfg, json.loads(example))
             else:
-                with open(CONFIG_PATH, "w") as f:
+                with open(CONFIG_PATH, "w", encoding="utf-8") as f:
                     json.dump(DEFAULT_CONFIG, f, indent=2)
         except OSError:
             pass
@@ -372,7 +384,8 @@ def apply_model_set(name=None):
     return name
 
 
-apply_model_set()   # startup: apply the active set (or merged "+a+b" selection)
+if STARTUP:
+    apply_model_set()   # startup: apply the active set (or merged "+a+b" selection)
 
 
 # ---- campaign ("Run All"): sequential runs across tasks × model sets ----
@@ -764,7 +777,7 @@ STATE = {
 ACTIVITY = []          # list of {ts, msg, fw, harness, level}
 ACTIVITY_MAX = 1500
 RUN_FLAG = threading.Event()
-LOCK = threading.Lock()
+LOCK = threading.RLock()
 PROCS = {}             # fw -> subprocess.Popen
 FW_LOGS = {}           # fw -> open log file for the framework's stdout
 FW_REASONING = {}      # fw -> reasoning level the running server was started with
@@ -809,9 +822,18 @@ def log(msg, fw=None, harness=None, level=""):
     line = f"{time.strftime('%Y-%m-%d %H:%M:%S')} [{fw or 'sys'}] {msg}"
     print(line, flush=True)
     try:
-        with open(os.path.join(LOG_DIR, "bench.log"), "a") as f:
+        lp = os.path.join(LOG_DIR, "bench.log")
+        try:
+            if os.path.getsize(lp) > 10 * 1024 * 1024:   # rotate at 10 MB
+                for i in range(3, 0, -1):   # .2→.3, .1→.2, log→.1
+                    srcp = lp if i == 1 else f"{lp}.{i - 1}"
+                    if os.path.exists(srcp):
+                        os.replace(srcp, f"{lp}.{i}")
+        except OSError:
+            pass
+        with open(lp, "a", encoding="utf-8") as f:
             f.write(line + "\n")
-    except OSError:
+    except (OSError, UnicodeEncodeError):
         pass
 
 
@@ -877,7 +899,7 @@ def free_ram():
     """Return (free_bytes, total_bytes). macOS: vm_stat; Linux: /proc/meminfo.
     Cached for 3s — the UI polls /api/state every ~1.2s and this used to
     spawn two subprocesses per poll."""
-    now = time.time()
+    now = time.monotonic()
     if _RAM_CACHE["total"] and now - _RAM_CACHE["t"] < 3.0:
         return _RAM_CACHE["free"], _RAM_CACHE["total"]
     total = _total_mem()
@@ -1029,12 +1051,14 @@ def server_cell_delta(fw, before, after):
         # and clamp to physically plausible ranges.
         if dp > 0 and dpre >= 2.0:
             pp = dp / dpre
-            if pp <= 10000:
-                out["server_pp"] = round(pp, 1)
+            out["server_pp"] = round(pp, 1)
+            if pp > 10000:   # counter-flush artifact — kept, but flagged
+                out["server_pp_flagged"] = True
         if dc > 0 and dgen >= 2.0:
             tgs = dc / dgen
-            if tgs <= 500:
-                out["server_tgs"] = round(tgs, 1)
+            out["server_tgs"] = round(tgs, 1)
+            if tgs > 500:    # small models legitimately decode faster
+                out["server_tgs_flagged"] = True
         out["server_prompt_tokens"] = dp
         out["server_completion_tokens"] = dc
     elif before["kind"] == "mlxserve":
@@ -1054,48 +1078,97 @@ def server_cell_delta(fw, before, after):
         out["server_completion_tokens"] = dc
         out["server_cached_tokens"] = after["cache"] - before["cache"]
     elif before["kind"] == "mlxvlm":
-        n0 = {json.dumps(r, sort_keys=True) for r in before["recent"]}
-        fresh = [r for r in after["recent"]
-                 if json.dumps(r, sort_keys=True) not in n0]
-        pps = [r["prefill_tok_s"] for r in fresh
-               if isinstance(r.get("prefill_tok_s"), (int, float))]
-        tgss = [r["decode_tok_s"] for r in fresh
-                if isinstance(r.get("decode_tok_s"), (int, float))]
+        fresh = _fresh_requests(before["recent"], after["recent"])
+        pp, pp_m = _weighted_rate(fresh, ("prefill_tok_s",),
+                                  ("prompt_tokens", "prefill_tokens"),
+                                  ("prefill_s", "prefill_seconds"))
+        tgs, tgs_m = _weighted_rate(fresh, ("decode_tok_s",),
+                                    ("completion_tokens", "decode_tokens"),
+                                    ("decode_s", "decode_seconds"))
+        if pp is not None:
+            out["server_pp"] = pp
+            out["server_pp_method"] = pp_m
+        if tgs is not None:
+            out["server_tgs"] = tgs
+            out["server_tgs_method"] = tgs_m
         ttfts = [r["ttft_s"] for r in fresh
                  if isinstance(r.get("ttft_s"), (int, float))]
-        if pps:
-            out["server_pp"] = round(sum(pps) / len(pps), 1)
-        if tgss:
-            out["server_tgs"] = round(sum(tgss) / len(tgss), 1)
         if ttfts:
             out["server_ttft_avg"] = round(sum(ttfts) / len(ttfts), 3)
         out["server_prompt_tokens"] = after["prompt"] - before["prompt"]
         out["server_completion_tokens"] = after["completion"] - before["completion"]
         out["server_requests"] = len(fresh)
     elif before["kind"] == "mtplx":
-        n0 = {json.dumps(r, sort_keys=True) for r in before["recent"]}
-        fresh = [r for r in after["recent"]
-                 if json.dumps(r, sort_keys=True) not in n0]
+        fresh = _fresh_requests(before["recent"], after["recent"])
         out["server_requests"] = len(fresh)
-        pps, tgss, tts = [], [], []
-        for r in fresh:
-            for pk in ("prefill_tok_s", "prompt_tps", "prefill_tps", "pp_tps"):
-                v = r.get(pk)
-                if isinstance(v, (int, float)) and 0.5 < v < 10000:
-                    pps.append(v); break
-            for gk in ("decode_tok_s", "generation_tps", "gen_tps", "tgs"):
-                v = r.get(gk)
-                if isinstance(v, (int, float)) and 0.5 < v < 500:
-                    tgss.append(v); break
-            if isinstance(r.get("ttft_s"), (int, float)):
-                tts.append(r["ttft_s"])
+        tts = [r["ttft_s"] for r in fresh
+               if isinstance(r.get("ttft_s"), (int, float))]
         if tts:
             out["server_ttft_avg"] = round(sum(tts) / len(tts), 3)
-        if pps:
-            out["server_pp"] = round(sum(pps) / len(pps), 1)
-        if tgss:
-            out["server_tgs"] = round(sum(tgss) / len(tgss), 1)
+        pp, pp_m = _weighted_rate(fresh,
+                                  ("prefill_tok_s", "prompt_tps", "prefill_tps", "pp_tps"),
+                                  ("prompt_tokens", "prefill_tokens"),
+                                  ("prefill_s", "prefill_seconds"))
+        tgs, tgs_m = _weighted_rate(fresh,
+                                    ("decode_tok_s", "generation_tps", "gen_tps", "tgs"),
+                                    ("completion_tokens", "decode_tokens"),
+                                    ("decode_s", "decode_seconds", "generation_s"))
+        if pp is not None:
+            out["server_pp"] = pp
+            out["server_pp_method"] = pp_m
+            if any(r.get(pk) for pk in ("prefill_tok_s", "prompt_tps",
+                                        "prefill_tps", "pp_tps")
+                   for r in fresh
+                   if isinstance(r.get(pk), (int, float)) and r[pk] >= 10000):
+                out["server_pp_flagged"] = True
+        if tgs is not None:
+            out["server_tgs"] = tgs
+            out["server_tgs_method"] = tgs_m
+            if any(r.get(gk) for gk in ("decode_tok_s", "generation_tps",
+                                        "gen_tps", "tgs")
+                   for r in fresh
+                   if isinstance(r.get(gk), (int, float)) and r[gk] >= 500):
+                out["server_tgs_flagged"] = True
     return out
+
+
+def _fresh_requests(before, after):
+    """Requests in `after` that aren't in `before`. Identity is a per-request
+    timestamp when the server exposes one (identical back-to-back requests
+    collapsed under the old whole-record diff); the server's `recent` buffer
+    is bounded, so an agent loop longer than the buffer can still lose its
+    earliest requests — the :7010 proxy is the exact counter, this is the
+    fallback view when traffic isn't routed through it."""
+    def key(r):
+        for k in ("ts", "time", "timestamp", "started_at", "id"):
+            if r.get(k) is not None:
+                return (k, r[k])
+        return ("json", json.dumps(r, sort_keys=True))
+    seen = {key(r) for r in before}
+    return [r for r in after if key(r) not in seen]
+
+
+def _weighted_rate(records, rate_keys, token_keys, sec_keys):
+    """(rate, method): token-weighted total-tokens/total-seconds when the
+    records carry token and second counters — a 20-token request then counts
+    as much as it deserves, not as much as a 20k-token one — falling back to
+    the unweighted mean of per-request rates when they don't."""
+    for r in records:
+        toks = next((r[k] for k in token_keys
+                     if isinstance(r.get(k), (int, float)) and r[k] > 0), None)
+        secs = next((r[k] for k in sec_keys
+                     if isinstance(r.get(k), (int, float)) and r[k] > 0), None)
+        if toks is None or secs is None:
+            break
+        tot_t = sum(next(r[k] for k in token_keys if isinstance(r.get(k), (int, float)) and r[k] > 0) for r in records)
+        tot_s = sum(next(r[k] for k in sec_keys if isinstance(r.get(k), (int, float)) and r[k] > 0) for r in records)
+        if tot_t > 0 and tot_s > 0:
+            return round(tot_t / tot_s, 1), "weighted"
+    vals = [r[k] for r in records for k in rate_keys
+            if isinstance(r.get(k), (int, float)) and r[k] > 0.5]
+    if not vals:
+        return None, None
+    return round(sum(vals) / len(vals), 1), "mean-of-requests"
 
 
 def log_device_info(fw):
@@ -1139,9 +1212,9 @@ def refresh_fw_status_idle(max_age=4.0):
     killed servers kept showing green forever. TTL-cached: the UI polls
     /api/state every ~1.2s; dead ports refuse instantly, live ones are a
     cheap TCP connect (no HTTP GET — the run path uses framework_healthy)."""
-    if time.time() - _FW_STATUS_TS["t"] < max_age:
+    if time.monotonic() - _FW_STATUS_TS["t"] < max_age:
         return
-    _FW_STATUS_TS["t"] = time.time()
+    _FW_STATUS_TS["t"] = time.monotonic()
     for fw in FRAMEWORKS:
         if STATE["framework_status"].get(fw) != "starting":
             set_fw_status(fw, "up" if port_open(FRAMEWORKS[fw]["port"]) else "down")
@@ -1167,16 +1240,19 @@ PROXY_TOTALS = {}  # cumulative since last manual clear (Proxy Inspector)
 PROXY_LOG = []     # per-request records for reporting, capped
 PROXY_LOG_MAX = 500
 PROXY_ZERO = {"requests": 0, "prompt_tokens": 0, "completion_tokens": 0,
+              "cached_prompt_tokens": 0,
               "ttft_sum": 0.0, "decode_sum": 0.0, "wall_sum": 0.0, "length_hits": 0}
 PROXY_STATS.update(PROXY_ZERO)
 PROXY_TOTALS.update(PROXY_ZERO)
 
 
 def proxy_reset():
+    # PROXY_ZERO is the single source of truth — a rebuilt literal here once
+    # omitted length_hits, so every finish=length request raised KeyError
+    # inside the lock and that cell's stats were silently dropped.
     with PROXY_LOCK:
         PROXY_STATS.clear()
-        PROXY_STATS.update({"requests": 0, "prompt_tokens": 0, "completion_tokens": 0,
-                            "ttft_sum": 0.0, "decode_sum": 0.0, "wall_sum": 0.0})
+        PROXY_STATS.update(PROXY_ZERO)
 
 
 def proxy_read():
@@ -1186,27 +1262,36 @@ def proxy_read():
 
 def _proxy_record(usage, t0, first_tok, last_tok, model=None, path="", stream=False, status=200,
                   finish=None):
-    now = time.time()
-    rec = {"ts": now, "path": path, "model": model, "stream": stream, "status": status,
-           "finish": finish,
+    # durations pair with a monotonic t0 from the caller; `ts` stays
+    # wall-clock purely for display in the Proxy Inspector
+    mono = time.monotonic()
+    # prompt-cache hits (OpenAI-style prompt_tokens_details; some servers
+    # expose a top-level cached_tokens) — recorded so PP can be read against
+    # uncached work instead of silently mixing cache-hit prefill in
+    cached = ((usage or {}).get("prompt_tokens_details") or {}).get("cached_tokens") \
+        or (usage or {}).get("cached_tokens") or 0
+    rec = {"ts": time.time(), "path": path, "model": model, "stream": stream,
+           "status": status, "finish": finish,
            "prompt_tokens": (usage or {}).get("prompt_tokens") or 0,
            "completion_tokens": (usage or {}).get("completion_tokens") or 0,
+           "cached_prompt_tokens": cached,
            "ttft": round(first_tok - t0, 3) if first_tok else None,
            "decode": round(last_tok - first_tok, 3)
                      if (first_tok and last_tok and last_tok > first_tok) else None,
-           "wall": round(now - t0, 3)}
+           "wall": round(mono - t0, 3)}
     with PROXY_LOCK:
         for store in (PROXY_STATS, PROXY_TOTALS):  # per-run + since-clear
             store["requests"] += 1
             store["prompt_tokens"] += rec["prompt_tokens"]
             store["completion_tokens"] += rec["completion_tokens"]
+            store["cached_prompt_tokens"] += cached
             if finish == "length":
                 store["length_hits"] += 1
             if first_tok:
                 store["ttft_sum"] += first_tok - t0
             if first_tok and last_tok and last_tok > first_tok:
                 store["decode_sum"] += last_tok - first_tok
-            store["wall_sum"] += now - t0
+            store["wall_sum"] += mono - t0
         PROXY_LOG.append(rec)
         if len(PROXY_LOG) > PROXY_LOG_MAX:
             del PROXY_LOG[: len(PROXY_LOG) - PROXY_LOG_MAX]
@@ -1236,7 +1321,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
         body = self.rfile.read(int(self.headers.get("Content-Length", 0) or 0))
         headers = {k: v for k, v in self.headers.items()
                    if k.lower() in ("content-type", "authorization", "accept")}
-        t0 = time.time()
+        t0 = time.monotonic()
         try:
             payload = json.loads(body) if body else None
         except json.JSONDecodeError:
@@ -1305,13 +1390,13 @@ class ProxyHandler(BaseHTTPRequestHandler):
                         continue
                     if chunk.get("usage"):
                         usage = chunk["usage"]
-                        last = time.time()
+                        last = time.monotonic()
                     for ch in chunk.get("choices") or []:
                         if ch.get("finish_reason"):
                             finish = ch["finish_reason"]
                         delta = ch.get("delta") or {}
                         if delta.get("content") or delta.get("reasoning_content") or ch.get("text"):
-                            now = time.time()
+                            now = time.monotonic()
                             if first is None:
                                 first = now
                             last = now
@@ -1320,6 +1405,7 @@ class ProxyHandler(BaseHTTPRequestHandler):
             _proxy_record(usage, t0, first, last, model, self.path, True, resp.status, finish)
         else:
             data = resp.read()
+            resp.close()
             usage = None
             finish = None
             try:
@@ -1433,6 +1519,44 @@ def ensure_single_model(fw):
             log(f"re-warm failed: {e}", fw=cfg["name"], level="err")
 
 
+_RUN_STATE = {"omlx_restores": []}
+_RUN_JSONL = {"path": None}
+_RUNS_HIST_CACHE = {"key": None, "runs": None}
+
+
+def _jsonl_cell(row):
+    """Append the finished cell to the run's JSONL immediately — runs/*.json
+    is written only in the run's finally, so a crash or kill -9 during a
+    multi-day campaign used to lose every cell of that run."""
+    try:
+        if _RUN_JSONL["path"] is None:
+            os.makedirs(RUNS_DIR, exist_ok=True)
+            _RUN_JSONL["path"] = os.path.join(
+                RUNS_DIR, time.strftime("%Y%m%d-%H%M%S") + "-cells.jsonl")
+        with open(_RUN_JSONL["path"], "a", encoding="utf-8") as f:
+            f.write(json.dumps({k: v for k, v in row.items() if k != "_text"},
+                               default=str) + "\n")
+    except OSError:
+        pass
+
+
+def _atomic_write_json(path, data):
+    """tempfile + os.replace: a crash mid-write can never truncate the
+    user's global settings file."""
+    d = os.path.dirname(path) or "."
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".benchtest-tmp-")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def omlx_reasoning_apply(fw, level):
     """omlx has no CLI reasoning flag — the level lives in its per-model
     settings file (reasoning_file), applied at request time. Rewrite the
@@ -1472,8 +1596,7 @@ def omlx_reasoning_apply(fw, level):
         forced.append(key)
     entry["forced_ct_kwargs"] = forced
     try:
-        with open(path, "w") as f:
-            json.dump(data, f, indent=2)
+        _atomic_write_json(path, data)
     except OSError as e:
         log(f"reasoning: cannot write {path} ({e})", fw=fw, level="err")
         return None
@@ -1494,8 +1617,7 @@ def omlx_reasoning_apply(fw, level):
                     e2.pop("forced_ct_kwargs", None)
                 else:
                     e2["forced_ct_kwargs"] = orig_forced
-            with open(path, "w") as f:
-                json.dump(data2, f, indent=2)
+            _atomic_write_json(path, data2)
             log(f"reasoning: {os.path.basename(path)} restored to pre-run "
                 f"value", fw=fw)
         except (OSError, json.JSONDecodeError) as e:
@@ -1521,7 +1643,7 @@ def _omlx_unload_all(cfg):
                 req = urllib.request.Request(
                     f"http://127.0.0.1:{cfg['port']}/v1/models/"
                     f"{urllib.parse.quote(mid)}/unload", method="POST")
-                urllib.request.urlopen(req, timeout=120)
+                urllib.request.urlopen(req, timeout=120).close()
                 log(f"unloaded resident model {mid} — freeing its memory",
                     fw=cfg["name"])
             except urllib.error.HTTPError as e:
@@ -1543,6 +1665,7 @@ def start_framework(fw, reasoning_level=None):
         # changed after the server process started, the running server is
         # applying stale settings (observed: the oQ5e 507'd every request
         # on a pre-125GB-ceiling server). Restart instead of reusing.
+        needs_restart = False
         if fw == "omlx":
             ms_path = os.path.expanduser(cfg.get("reasoning_file", ""))
             srv_pids = subprocess.run(["lsof", "-ti", f":{cfg['port']}"],
@@ -1559,7 +1682,7 @@ def start_framework(fw, reasoning_level=None):
                         log(f"{cfg['name']} server predates model_settings.json "
                             f"changes - restarting for the new settings",
                             fw=cfg["name"], level="err")
-                        stop_framework(fw)
+                        needs_restart = True
                 except Exception:
                     pass
         if fw in PROCS and FW_REASONING.get(fw) != reasoning_level:
@@ -1567,7 +1690,7 @@ def start_framework(fw, reasoning_level=None):
             # are baked in at start, so restart with the right level.
             log(f"{cfg['name']} is up with reasoning={FW_REASONING.get(fw)} — "
                 f"restarting for reasoning={reasoning_level}", fw=fw)
-            stop_framework(fw)
+            needs_restart = True
         if fw in PROCS and fw != "omlx":
             # single-model servers run ONE model via CLI flags: if the served
             # model is not the newly selected one, a reuse would benchmark the
@@ -1578,7 +1701,13 @@ def start_framework(fw, reasoning_level=None):
                                   for s in served):
                 log(f"{cfg['name']} serves {served} but {cfg['model']} is "
                     f"selected — restarting for the new model", fw=fw)
-                stop_framework(fw)
+                needs_restart = True
+        if needs_restart:
+            # stop exactly once, then fall through to a clean start below —
+            # the old shape hung the reuse `else` off the PROCS check, so a
+            # reasoning change could log "reusing" with nothing running, and
+            # a healthy reusable server got double-spawned onto its own port
+            stop_framework(fw)
         else:
             log(f"{cfg['name']} already running on port {cfg['port']} — reusing"
                 + (f" (reasoning={FW_REASONING.get(fw)})"
@@ -1609,13 +1738,27 @@ def start_framework(fw, reasoning_level=None):
                                 stderr=subprocess.STDOUT, start_new_session=True)
     except FileNotFoundError:
         log(f"{cfg['name']} CLI not found — check start_cmd in config.json", fw=fw, level="err")
+        if logf not in (subprocess.DEVNULL, None):
+            logf.close()
+        set_fw_status(fw, "down")
+        return False
+    except OSError as e:
+        log(f"{cfg['name']} failed to start: {e}", fw=fw, level="err")
+        if logf not in (subprocess.DEVNULL, None):
+            logf.close()
         set_fw_status(fw, "down")
         return False
     with LOCK:
+        stale = FW_LOGS.get(fw)
+        if stale not in (subprocess.DEVNULL, None) and stale is not logf:
+            try:
+                stale.close()
+            except OSError:
+                pass
         PROCS[fw] = proc
         FW_LOGS[fw] = logf
-    deadline = time.time() + 300  # allow up to 5 min for model load
-    while time.time() < deadline and proc.poll() is None:
+    deadline = time.monotonic() + 300  # allow up to 5 min for model load
+    while time.monotonic() < deadline and proc.poll() is None:
         if not RUN_FLAG.is_set():
             stop_framework(fw)
             return False
@@ -1666,7 +1809,11 @@ def stop_framework(fw):
         # previous backend) — stop it anyway: the next framework's model
         # needs the memory, and a resident model silently skews the
         # comparison. SIGTERM the listener, then SIGKILL if it lingers.
-        pids = subprocess.run(["lsof", "-ti", f":{cfg['port']}"],
+        # -sTCP:LISTEN: only the listener — a bare `-ti :port` also lists
+        # CLIENT sockets, which once matched our own health check and made
+        # stop_framework kill the benchmark server itself
+        pids = subprocess.run(["lsof", "-tiTCP:" + str(cfg["port"]),
+                               "-sTCP:LISTEN"],
                               capture_output=True, text=True).stdout.split()
         for pid in pids:
             try:
@@ -1674,7 +1821,9 @@ def stop_framework(fw):
             except (ValueError, ProcessLookupError, PermissionError):
                 pass
         try:
-            subprocess.run(["pkill", "-9", "-f", f"port {cfg['port']}"],
+            # anchored: "port 700" must not match "port 7001" in someone's argv
+            subprocess.run(["pkill", "-9", "-f",
+                            rf"port {cfg['port']}([^0-9]|$)"],
                            capture_output=True, timeout=10)
         except Exception:
             pass
@@ -1720,10 +1869,15 @@ def call_chat(fw, prompt, settings, messages=None, on_progress=None):
         "max_tokens": settings.get("max_tokens", 65536),
         "stream": True,
     }
+    # t0 BEFORE the request: servers that send response headers only when
+    # the first chunk is ready made TTFT read ~0 when t0 was taken after
+    # urlopen returned — prefill speed was wildly inflated
+    t0 = time.monotonic()
     try:
         resp = _chat_request(url, dict(body, stream_options={"include_usage": True}))
     except urllib.error.HTTPError as e:
         if e.code == 400:  # server doesn't know stream_options — retry plain
+            e.close()      # don't leak the failed attempt's response object
             resp = _chat_request(url, body)
         else:
             raise
@@ -1740,13 +1894,14 @@ def call_chat(fw, prompt, settings, messages=None, on_progress=None):
     except (AttributeError, OSError):
         pass
 
-    t0 = time.time()
     ttft = None
     parts = []
     usage = None
     finish = None
     think_chars = 0
     last_pb = 0.0
+    chars = 0          # running length: progress no longer joins the buffer
+    tail = ""          #   every tick (was O(n^2) over long generations)
     try:
         for raw in resp:
             line = raw.decode("utf-8", "replace").strip()
@@ -1766,21 +1921,22 @@ def call_chat(fw, prompt, settings, messages=None, on_progress=None):
                 delta = choices[0].get("delta") or {}
                 if delta.get("content"):
                     if ttft is None:
-                        ttft = time.time() - t0
+                        ttft = time.monotonic() - t0
                     parts.append(delta["content"])
+                    chars += len(delta["content"])
+                    tail = (tail + delta["content"])[-70:]
                 elif delta.get("reasoning_content"):
                     # Thinking models stream reasoning first — prefill is done
                     # when the first token of ANY kind arrives.
                     if ttft is None:
-                        ttft = time.time() - t0
+                        ttft = time.monotonic() - t0
                     think_chars += len(delta["reasoning_content"])
                 if choices[0].get("finish_reason"):
                     finish = choices[0]["finish_reason"]
-            if on_progress is not None and time.time() - last_pb >= 10.0:
-                last_pb = time.time()
-                streamed = "".join(parts)
-                on_progress(time.time() - t0, len(streamed) // 4,
-                            streamed[-70:], think_chars)
+            if on_progress is not None and time.monotonic() - last_pb >= 10.0:
+                last_pb = time.monotonic()
+                on_progress(time.monotonic() - t0, chars // 4,
+                            tail, think_chars)
     except (OSError, urllib.error.URLError) as e:
         with CUR_LOCK:
             CURRENT["sock"] = None
@@ -1796,14 +1952,21 @@ def call_chat(fw, prompt, settings, messages=None, on_progress=None):
     if not RUN_FLAG.is_set():
         raise RunStopped()
 
-    total = time.time() - t0
+    total = time.monotonic() - t0
     text = "".join(parts)
-    ptok = (usage or {}).get("prompt_tokens") or len(prompt.split())
+    # tokens_estimated: the stream carried no usage block, so counts fall back
+    # to whitespace word-counts (a ~2-3x undercount on code) — flagged so
+    # charts can separate exact from estimated rows
+    tokens_est = not (usage or {}).get("prompt_tokens") \
+        or not (usage or {}).get("completion_tokens")
+    ptok = (usage or {}).get("prompt_tokens") or len((prompt or "").split())
     ctok = (usage or {}).get("completion_tokens") or len(text.split())
     gen_time = max(total - (ttft or 0), 1e-6)
     metrics = {
+        "tokens_estimated": tokens_est,
         "pp": round(ptok / ttft, 1) if ttft else None,       # prefill tok/s
-        "tgs": round(ctok / gen_time, 1) if ctok else None,  # decode tok/s
+        # ctok-1: the first token's time sits inside TTFT, not gen_time
+        "tgs": round(max(ctok - 1, 0) / gen_time, 1) if ctok else None,  # decode tok/s
         "tps": round(ctok / total, 1) if ctok and total else None,  # overall
         "ttft": round(ttft, 3) if ttft else None,
         "prompt_tokens": ptok,
@@ -2303,7 +2466,7 @@ def rawplus_generate(fw, prompt, settings, on_progress=None):
     generation across calls. Per-chunk cap unchanged (uniform settings);
     total budget = RAWPLUS_MAX_ROUNDS x cap. Returns (text, tokens, wall,
     truncated, metrics, rounds)."""
-    t0 = time.time()
+    t0 = time.monotonic()
     buffer = ""
     total_ctok = 0
     total_ptok = 0
@@ -2342,7 +2505,7 @@ def rawplus_generate(fw, prompt, settings, on_progress=None):
         if not trunc:
             truncated = False
             break
-    wall = time.time() - t0
+    wall = time.monotonic() - t0
     metrics = {"pp": first_metrics.get("pp"), "ttft": first_metrics.get("ttft"),
                "tgs": round(total_ctok / decode_s, 1) if decode_s > 0 else None,
                "prompt_tokens": total_ptok, "continuations": rounds - 1}
@@ -2355,28 +2518,46 @@ def sweep_stray_processes():
     cells; most die with their process group, but ones that detach (observed:
     a `node pause2.js` pinning a core for hours after its cell ended) escape
     the group kill. Called after each agent cell and at run end."""
-    me = os.getpid()
+    protected = {os.getpid()}
+    pp = os.getpid()
+    for _ in range(8):   # our shell/editor ancestry is never swept
+        try:
+            pp = int(subprocess.run(["ps", "-o", "ppid=", "-p", str(pp)],
+                                    capture_output=True, text=True,
+                                    timeout=5).stdout.strip() or 0)
+        except Exception:
+            break
+        if pp <= 1:
+            break
+        protected.add(pp)
+    work_root = os.path.realpath(WORK_DIR) + os.sep   # symlinked checkouts too
     try:
         out = subprocess.run(["lsof", "-a", "-d", "cwd", "-Fn"],
                              capture_output=True, text=True, timeout=20).stdout
     except Exception:
         return
-    for chunk in out.split("\np"):
+    chunks = out.split("\np")
+    if chunks and chunks[0].startswith("p"):
+        chunks[0] = chunks[0][1:]   # the first record keeps its leading "p"
+    for chunk in chunks:
         lines = chunk.split("\n")
         if not lines or not lines[0].isdigit():
             continue
         pid = int(lines[0])
-        if pid == me:
+        if pid in protected:
             continue
         for l in lines[1:]:
-            if l.startswith("n") and l[1:].startswith(WORK_DIR + os.sep):
+            if l.startswith("n") and os.path.realpath(l[1:]).startswith(work_root):
                 try:
                     os.kill(pid, signal.SIGKILL)
-                    log(f"swept stray process {pid} (cwd {l[1:][len(WORK_DIR):]})",
+                    log(f"swept stray process {pid} (cwd {l[1:]})",
                         level="err")
                 except (ProcessLookupError, PermissionError):
                     pass
                 break
+
+
+OUT_LINE_CAP = 100_000   # bounded agent-stdout buffer (head+tail kept)
 
 
 def run_cli_abortable(cmd, env, cwd, timeout, line_cb=None, fw=None):
@@ -2391,8 +2572,12 @@ def run_cli_abortable(cmd, env, cwd, timeout, line_cb=None, fw=None):
     models whose abort path doesn't close the stream) — the harness is
     stopped and any artifact it wrote is kept. Returns
     (out, err, returncode, stopped, timed_out)."""
+    # errors="replace": agent output containing one invalid UTF-8 byte (an
+    # agent cat-ing a binary) used to kill the reader thread, leaving the
+    # pipe undrained and the child blocked forever on a full pipe.
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                         text=True, env=env, cwd=cwd, start_new_session=True,
+                         text=True, encoding="utf-8", errors="replace",
+                         env=env, cwd=cwd, start_new_session=True,
                          bufsize=1)
     with CUR_LOCK:
         CURRENT["proc"] = p
@@ -2412,10 +2597,10 @@ def run_cli_abortable(cmd, env, cwd, timeout, line_cb=None, fw=None):
     reader = threading.Thread(target=_reader, daemon=True)
     reader.start()
 
-    deadline = time.time() + timeout
+    deadline = time.monotonic() + timeout
     stopped = timed_out = False
     out_lines = []
-    last_line_ts = time.time()
+    last_line_ts = time.monotonic()
     last_probe = 0.0
     probe_base = None
     while True:
@@ -2423,16 +2608,16 @@ def run_cli_abortable(cmd, env, cwd, timeout, line_cb=None, fw=None):
         # longer starve them (they previously ran only on idle ticks)
         if not RUN_FLAG.is_set():
             stopped = True
-        elif time.time() >= deadline:
+        elif time.monotonic() >= deadline:
             timed_out = True
         # stall watchdog: ~10 min of output silence plus a frozen per-token
         # completion counter = the model stream hung; stop the harness and
         # keep whatever it delivered. 10 min (not 5) so a harness running a
         # legitimately silent local command is not killed mid-work.
         if (not stopped and not timed_out and fw in ("omlx", "mlxserve")
-                and time.time() - last_line_ts > 600
-                and time.time() - last_probe > 60):
-            now = time.time()
+                and time.monotonic() - last_line_ts > 600
+                and time.monotonic() - last_probe > 60):
+            now = time.monotonic()
             snap = server_snapshot(fw) if fw in FRAMEWORKS else None
             cur = (snap or {}).get("completion") if snap else None
             if cur is not None:
@@ -2451,11 +2636,21 @@ def run_cli_abortable(cmd, env, cwd, timeout, line_cb=None, fw=None):
         except _queue.Empty:
             line = "__poll__"
         if line is None:
-            p.wait()
+            # reader finished (EOF — or it died): wait bounded and keep
+            # honoring stop/deadline instead of a bare p.wait() that hangs
+            # forever if the child is still alive.
+            while p.poll() is None:
+                if not RUN_FLAG.is_set():
+                    stopped = True
+                    break
+                if time.monotonic() >= deadline:
+                    timed_out = True
+                    break
+                time.sleep(0.2)
             break
         if line != "__poll__":
             out_lines.append(line)
-            last_line_ts = time.time()
+            last_line_ts = time.monotonic()
             if line_cb:
                 try:
                     clean = ANSI_RE.sub("", line).rstrip()
@@ -2495,6 +2690,15 @@ def run_cli_abortable(cmd, env, cwd, timeout, line_cb=None, fw=None):
         CURRENT["proc"] = None
     if not timed_out and not RUN_FLAG.is_set():
         stopped = True
+    # a chatty agent can stream hundreds of MB of JSON events over a 2h cell;
+    # bound the buffer keeping head (early events frame the session) and tail
+    # (the artifact-bearing final events)
+    if len(out_lines) > OUT_LINE_CAP:
+        keep_tail = OUT_LINE_CAP - 500
+        out_lines[:] = (out_lines[:500]
+                        + [f"…[benchtest: output truncated — kept first 500 "
+                           f"and last {keep_tail} of {len(out_lines)} lines]…\n"]
+                        + out_lines[-keep_tail:])
     return "".join(out_lines), "", p.returncode, stopped, timed_out
 
 
@@ -2596,8 +2800,13 @@ def run_harness(fw, harness, task_name, prompt, settings, task=None):
                     "error": f"unknown harness {harness}"}
 
         if not shutil.which(cmd[0]):
-            log(f"{label} CLI not found — using raw API fallback", fw=cfg["name"], harness=label)
-            text, ntok, gen, truncated, metrics = call_chat(fw, prompt, settings)
+            # an agent row must BE an agent row: the old silent raw-API
+            # fallback recorded raw numbers under the agent's label and
+            # quietly skewed the comparison
+            log(f"{label} CLI not found ({cmd[0]}) — install it or untick the "
+                f"harness", fw=cfg["name"], harness=label, level="err")
+            return {"status": "error", "latency": 0, "tokens": 0, "tps": 0.0,
+                    "error": f"{label} CLI not found on PATH: {cmd[0]}"}
         else:
             log(f"dispatching via CLI: {cmd[0]}", fw=cfg["name"], harness=label)
             if harness not in ("opencode", "hart"):  # these set their own workdir
@@ -2609,7 +2818,7 @@ def run_harness(fw, harness, task_name, prompt, settings, task=None):
                 shutil.copy2(os.path.join(ROOT, "fixtures", src_name),
                              os.path.join(workdir, dst_name))
             proxy_reset()
-            t0 = time.time()
+            t0 = time.monotonic()
 
             def _line_handler(line):
                 # JSON event streams (pi/opencode) and goose's debug narration
@@ -2629,7 +2838,7 @@ def run_harness(fw, harness, task_name, prompt, settings, task=None):
             out, errtext, rc, stopped, timed_out = run_cli_abortable(
                 cmd, env, workdir, CLI_TIMEOUT, line_cb=_line_handler, fw=fw)
             sweep_stray_processes()   # detached helper scripts die with the cell
-            gen = time.time() - t0
+            gen = time.monotonic() - t0
             if stopped:
                 log(f"{label} stopped by user after {gen:.0f}s",
                     fw=cfg["name"], harness=label, level="err")
@@ -2645,8 +2854,13 @@ def run_harness(fw, harness, task_name, prompt, settings, task=None):
             # agent's calls (the CLIs don't expose timing internals).
             st = proxy_read()
             if st["requests"]:
-                metrics = {"prompt_tokens": st["prompt_tokens"],
-                           "ttft": round(st["ttft_sum"] / st["requests"], 3)}
+                # UPDATE — a rebind here threw away the stream's `calls` (the
+                # Iterations column) and goose's parsed timing whenever the
+                # proxy saw traffic
+                metrics.update({"prompt_tokens": st["prompt_tokens"],
+                                "ttft": round(st["ttft_sum"] / st["requests"], 3)})
+                if st.get("cached_prompt_tokens"):
+                    metrics["cached_prompt_tokens"] = st["cached_prompt_tokens"]
                 if st["ttft_sum"] > 0:
                     metrics["pp"] = round(st["prompt_tokens"] / st["ttft_sum"], 1)
                 if st["decode_sum"] > 0 and st["completion_tokens"] > 0:
@@ -2689,6 +2903,8 @@ def run_harness(fw, harness, task_name, prompt, settings, task=None):
                 # beats the word-count heuristic (artifacts included only as
                 # a fallback when the stream didn't parse).
                 ntok = exact_tokens
+            metrics["tokens_estimated"] = not (exact_tokens
+                                               or st.get("completion_tokens"))
             if timed_out:
                 extra = (f"; model traffic so far: {st['requests']} call(s), "
                          f"{st['completion_tokens']} tok") if st["requests"] else ""
@@ -2703,7 +2919,7 @@ def run_harness(fw, harness, task_name, prompt, settings, task=None):
                 else:
                     log(f"{label} timed out after {CLI_TIMEOUT}s{extra}",
                         fw=cfg["name"], harness=label, level="err")
-                    return {"status": "error", "latency": round(time.time() - t0, 2),
+                    return {"status": "error", "latency": round(time.monotonic() - t0, 2),
                             "tokens": 0, "tps": 0.0,
                             "error": f"timeout after {CLI_TIMEOUT}s{extra}"}
             elif rc != 0:
@@ -2777,8 +2993,8 @@ def run_harness(fw, harness, task_name, prompt, settings, task=None):
             content, fname = text, f"{oid}.md"
         else:
             content, fname = text, f"{oid}.txt"
-    ctype = "text/html" if fname.endswith(".html") else "text/plain"
-    with open(os.path.join(OUTPUT_DIR, fname), "w") as f:
+    with open(os.path.join(OUTPUT_DIR, fname), "w", encoding="utf-8",
+              errors="replace") as f:
         f.write(content)
     result["output_url"] = f"/output/{fname}"
 
@@ -2843,6 +3059,7 @@ def run_benchmark(req):
     log(f"reasoning level for this run: {reasoning_level} "
         f"({'LONG' if long_task else 'standard'} task)", level="ok")
 
+    _RUN_JSONL["path"] = None
     with LOCK:
         STATE["running"] = True
         STATE["results"] = []
@@ -2855,14 +3072,7 @@ def run_benchmark(req):
     if task_id == "logreport":
         _build_logreport_fixture()
         prompt = prompt.replace("@LOGREPORT_INLINE@", _logreport_inline())
-    elif task_id == "bugfix":
-        src_path = os.path.join(ROOT, "fixtures", "expenses-broken.html")
-        try:
-            with open(src_path, encoding="utf-8") as fh:
-                prompt = prompt.replace("@BUGFIX_SOURCE@", fh.read())
-        except OSError:
-            prompt = prompt.replace("@BUGFIX_SOURCE@", "(fixture file missing)")
-    elif task_id == "bugfix" or task_id == "codereview":
+    elif task_id in ("bugfix", "codereview"):
         # inline the fixture source; if the user edited the prompt and removed
         # the placeholder, append it anyway so the model always sees the code
         fname = "expenses-broken.html" if task_id == "bugfix" else "review-sample.py"
@@ -2880,6 +3090,7 @@ def run_benchmark(req):
     # omlx-style frameworks keep the reasoning level in a per-model settings
     # file (applied at request time) — rewrite it for the run, restore after.
     reasoning_restores = []
+    _RUN_STATE["omlx_restores"] = reasoning_restores   # signal-path access
     for fw in frameworks:
         if FRAMEWORKS[fw].get("reasoning_file"):
             r = omlx_reasoning_apply(fw, effective_reasoning(fw, reasoning_level))
@@ -3011,6 +3222,7 @@ def run_benchmark(req):
                     except Exception as e:
                         row.update({"status": "error", "error": str(e)[:300]})
                         log(f"failed: {e}", fw=cfg["name"], harness=label, level="err")
+                    _jsonl_cell(row)   # survive crashes/power loss per cell
 
             # framework's tests complete → shut it down before next framework
             with LOCK:
@@ -3019,6 +3231,7 @@ def run_benchmark(req):
     finally:
         for r in reasoning_restores:
             r()
+        _RUN_STATE["omlx_restores"] = []
         for fw in list(PROCS):
             stop_framework(fw)
         sweep_stray_processes()   # nothing a cell spawned outlives the run
@@ -3182,7 +3395,15 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
-        self._safe(self._route_options) if hasattr(self, "_route_options") else             self.send_response(204) or self.end_headers()
+        if hasattr(self, "_route_options"):
+            self._safe(self._route_options)
+        else:
+            self.send_response(204)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Headers", "*")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
 
     def do_GET(self):
         self._safe(self._route_get)
@@ -3286,7 +3507,9 @@ class Handler(BaseHTTPRequestHandler):
             self._json(snap)
         elif self.path.startswith("/api/activity?since="):
             try:
-                since = float(self.path.split("since=")[1])
+                from urllib.parse import urlparse as _up, parse_qs as _pq
+                since = float((_pq(_up(self.path).query)
+                               .get("since") or ["0"])[0])
             except (IndexError, ValueError):
                 raise ValueError("since= must be a number")
             with LOCK:
@@ -3294,9 +3517,17 @@ class Handler(BaseHTTPRequestHandler):
             self._json(lines)
         elif self.path == "/api/runs_history":
             import glob as _g
+            files = sorted(_g.glob(os.path.join(RUNS_DIR, "*.json")),
+                           reverse=True)
+            try:
+                key = tuple((f, os.path.getmtime(f)) for f in files)
+            except OSError:
+                key = None
+            if key is not None and _RUNS_HIST_CACHE["key"] == key:
+                self._json(_RUNS_HIST_CACHE["runs"])
+                return
             runs = []
-            for f in sorted(_g.glob(os.path.join(RUNS_DIR, "*.json")),
-                            reverse=True):
+            for f in files:
                 try:
                     with open(f) as fh:
                         d = json.load(fh)
@@ -3312,6 +3543,8 @@ class Handler(BaseHTTPRequestHandler):
                                  "rows": rows})
                 except (json.JSONDecodeError, OSError):
                     pass
+            _RUNS_HIST_CACHE["key"] = key
+            _RUNS_HIST_CACHE["runs"] = runs
             self._json(runs)
         elif self.path == "/api/campaign":
             c = STATE.get("campaign") or _campaign_load() or {}
@@ -3400,8 +3633,13 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/api/run":
             _validate_run(req)  # 400 on bad input before spawning a thread
             with LOCK:
-                already = STATE["running"]
-            if already:
+                # claim the single run slot atomically — the old read-then-
+                # spawn raced, so two quick POSTs both started run_benchmark
+                taken = (STATE["running"]
+                         or (STATE.get("campaign") or {}).get("active"))
+                if not taken:
+                    STATE["running"] = True
+            if taken:
                 self._json({"ok": False, "error": "already running"}, 409)
                 return
             threading.Thread(target=run_benchmark, args=(req,), daemon=True).start()
@@ -3409,6 +3647,9 @@ class Handler(BaseHTTPRequestHandler):
         elif self.path == "/api/model/select":
             # MODEL-FIRST selection: one model -> the frameworks that can serve
             # it are enabled, everything else is marked unavailable.
+            with LOCK:
+                if STATE.get("running"):
+                    raise ValueError("a run is in progress — Stop it before changing models")
             model = str((req or {}).get("model") or "")
             store = str((req or {}).get("store") or "hf")
             if not model:
@@ -3450,20 +3691,12 @@ class Handler(BaseHTTPRequestHandler):
             request_stop()
             log("stop requested — killing in-flight work", level="err")
             self._json({"ok": True})
-        if self.path.startswith("/api/relay/"):
+        elif self.path.startswith("/api/relay/"):
             self._relay()
-            return
-            # the resolved fixture source for prompt display: the dashboard
-            # inlines it into the prompt box so users see what the model sees
-            from urllib.parse import urlparse, parse_qs
-            q = parse_qs(urlparse(self.path).query)
-            task = (q.get("task") or [""])[0]
-            if task not in TASK_FIXTURES:
-                raise ValueError(f"no fixture for task {task!r}")
-            fname = TASK_FIXTURES[task][0]
-            with open(os.path.join(ROOT, "fixtures", fname), encoding="utf-8") as fh:
-                self._json({"task": task, "file": fname, "source": fh.read()})
         elif self.path == "/api/models/select":
+            with LOCK:
+                if STATE.get("running"):
+                    raise ValueError("a run is in progress — Stop it before changing models")
             fw = req.get("fw") if isinstance(req, dict) else None
             model = req.get("model") if isinstance(req, dict) else None
             if fw not in FRAMEWORKS:
@@ -3487,16 +3720,11 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": True, "model": cfg["model"]})
         elif self.path == "/api/campaign":
             action = (req or {}).get("action")
-            with LOCK:
-                busy = STATE.get("running")
             camp = STATE.get("campaign") or {}
             if action == "start":
                 mode = req.get("mode")
                 if mode not in ("set", "all"):
                     self._json({"ok": False, "error": "mode must be set|all"}, 400)
-                    return
-                if busy or camp.get("active"):
-                    self._json({"ok": False, "error": "a run or campaign is already active"}, 409)
                     return
                 sets = (req.get("sets")
                         or (list((CONFIG.get("model_sets") or {}).keys())
@@ -3526,6 +3754,12 @@ class Handler(BaseHTTPRequestHandler):
                             return
                 harnesses = [h for h in (req.get("harnesses") or [])
                              if h in HARNESS_LABELS] or None
+                with LOCK:
+                    # claim atomically — the old busy check raced a twin start
+                    if STATE.get("running") or (STATE.get("campaign") or {}).get("active"):
+                        self._json({"ok": False, "error": "a run or campaign is already active"}, 409)
+                        return
+                    STATE["campaign"] = {"active": True, "status": "running"}
                 threading.Thread(target=campaign_runner,
                                  args=(mode, sets, 0, harnesses),
                                  daemon=True).start()
@@ -3535,9 +3769,11 @@ class Handler(BaseHTTPRequestHandler):
                 if not saved or not saved.get("sets"):
                     self._json({"ok": False, "error": "no campaign to resume"}, 400)
                     return
-                if busy or camp.get("active"):
-                    self._json({"ok": False, "error": "a run or campaign is already active"}, 409)
-                    return
+                with LOCK:
+                    if STATE.get("running") or (STATE.get("campaign") or {}).get("active"):
+                        self._json({"ok": False, "error": "a run or campaign is already active"}, 409)
+                        return
+                    STATE["campaign"] = {"active": True, "status": "running"}
                 idx = saved.get("index", 0)
                 threading.Thread(target=campaign_runner,
                                  args=(saved.get("mode", "all"), saved.get("sets"),
@@ -3555,6 +3791,9 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 self._json({"ok": False, "error": "action must be start|resume|cancel"}, 400)
         elif self.path == "/api/model_set":
+            with LOCK:
+                if STATE.get("running"):
+                    raise ValueError("a run is in progress — Stop it before changing models")
             mmap = (req or {}).get("models")
             if isinstance(mmap, dict) and mmap:
                 models_map = {}
@@ -3563,16 +3802,18 @@ class Handler(BaseHTTPRequestHandler):
                         raise ValueError(f"unknown framework {fw!r}")
                     if model:
                         models_map[fw] = str(model)
-                # frameworks the selection leaves empty become unavailable —
-                # their checkboxes clear (e.g. MLX-VLM/MLX-Serve under a
-                # flash-next family pick)
-                for fw in FRAMEWORKS:
-                    FRAMEWORKS[fw]["model_available"] = fw in models_map
                 try:
                     _validate_fit(models_map)
                 except ValueError as e:
                     self._json({"ok": False, "error": str(e)}, 400)
                     return
+                # validate FIRST — mutating availability before the fit check
+                # left in-memory state half-changed on a rejected selection.
+                # Frameworks the selection leaves empty become unavailable —
+                # their checkboxes clear (e.g. MLX-VLM/MLX-Serve under a
+                # flash-next family pick)
+                for fw in FRAMEWORKS:
+                    FRAMEWORKS[fw]["model_available"] = fw in models_map
                 for fw, model in models_map.items():
                     cfg = FRAMEWORKS[fw]
                     if fw == "omlx":
@@ -3685,10 +3926,31 @@ class Handler(BaseHTTPRequestHandler):
         self._json({"ok": True, "deleted_outputs": removed})
 
 
+def _restore_omlx_settings():
+    """Signal/atexit path: the run worker is a daemon thread whose finally
+    never runs on SIGTERM/Ctrl-C — without this the user's global
+    ~/.omlx/model_settings.json stays modified after a killed run."""
+    restores, _RUN_STATE["omlx_restores"] = _RUN_STATE["omlx_restores"], []
+    for r in restores:
+        try:
+            r()
+        except Exception:
+            pass
+
+
 def _shutdown(signum, _frame):
-    log(f"received signal {signum} — shutting down frameworks", level="err")
+    log(f"received signal {signum} — stopping run and shutting down frameworks",
+        level="err")
+    try:
+        request_stop()   # wake in-flight agent CLIs (own sessions) + streams
+    except Exception:
+        pass
+    _restore_omlx_settings()
     for fw in list(PROCS):
-        stop_framework(fw)
+        try:
+            stop_framework(fw)
+        except Exception:
+            pass
     sys.exit(0)
 
 
@@ -3701,6 +3963,10 @@ def main():
     for fw in FRAMEWORKS:
         set_fw_status(fw, "up" if framework_healthy(fw) else "down")
     signal.signal(signal.SIGTERM, _shutdown)
+    signal.signal(signal.SIGINT, _shutdown)    # Ctrl-C cleans up, no traceback
+    if hasattr(signal, "SIGHUP"):
+        signal.signal(signal.SIGHUP, _shutdown)   # terminal/window closed
+    atexit.register(_restore_omlx_settings)
     # auto-resume an interrupted campaign (week-long runs span restarts)
     saved = _campaign_load()
     if saved and saved.get("active") and saved.get("status") == "running" \
@@ -3710,7 +3976,11 @@ def main():
             f"({', '.join(saved['sets'])})", level="ok")
         threading.Thread(target=campaign_runner,
                          args=(saved.get("mode", "all"), saved.get("sets"),
-                               saved.get("index", 0)), daemon=True).start()
+                               saved.get("index", 0),
+                               # without this, a resumed week-long campaign
+                               # silently widened to ALL six harnesses
+                               saved.get("harnesses")),
+                         daemon=True).start()
     log("benchmark server ready"
         + (f" (measurement proxy on :{PROXY_PORT})" if ROUTE_VIA_PROXY else ""))
     if host in ("0.0.0.0", "::"):

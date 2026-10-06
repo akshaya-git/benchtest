@@ -3,10 +3,15 @@ bench-log lines, per-framework server errors. Each MCP call is printed with
 its name so the invocation log doubles as the review log."""
 import asyncio
 import json
+import os
 import sys
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+VENV_PY = os.path.join(ROOT, "mcp", "venv", "bin", "python")
+SERVER = os.path.join(ROOT, "mcp", "benchtest_mcp.py")
 
 CALLS = []
 
@@ -19,8 +24,7 @@ async def call(session, name, args=None, keep=6):
 
 
 async def main():
-    params = StdioServerParameters(command="./venv/bin/python",
-                                   args=["benchtest_mcp.py"], cwd=".")
+    params = StdioServerParameters(command=VENV_PY, args=[SERVER])
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as s:
             await s.initialize()
@@ -33,9 +37,9 @@ async def main():
             bad = [x for x in state.get("results", [])
                    if x.get("status") not in ("done", None) or x.get("error")]
             for x in state.get("results", []):
-                flag = "⚠" if x.get("error") or (x.get("qa_func") or 100) < 90 else " "
+                flag = "⚠" if x.get("error") else " "
                 print(f"  {flag} {x.get('framework')}/{x.get('harness'):<9} "
-                      f"{x.get('status'):<7} qa={x.get('qa_func')} "
+                      f"{x.get('status'):<7} "
                       f"{str(x.get('error') or '')[:60]}")
 
             errs = await call(s, "tail_bench_log", {"lines": 400, "only_errors": True})
