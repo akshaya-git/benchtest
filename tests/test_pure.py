@@ -275,7 +275,7 @@ class TestScanFolderModels(unittest.TestCase):
                 out = server._scan_folder_models(root)
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0]["id"], "org/name")
-        self.assertEqual(out[0]["path"], snap)
+        self.assertEqual(out[0]["path"], os.path.realpath(snap))
 
     def test_folder_that_is_itself_a_model(self):
         import tempfile as _t
