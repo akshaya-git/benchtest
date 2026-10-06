@@ -254,7 +254,7 @@ FRAMEWORKS = CONFIG["frameworks"]
 def _fit_lookup():
     """Discovered candidates keyed by model id — for fit validation when a
     selection is applied. One disk scan per call (~1-2 s), fine on a click."""
-    free, _ = free_ram()
+    free, _ = available_ram()
     machine = discovery.machine_profile()
     out = {}
     for c in discovery.all_candidates(round(free / 1073741824, 1), FRAMEWORKS,
@@ -820,6 +820,36 @@ def log(msg, fw=None, harness=None, level=""):
 # ----------------------------------------------------------------------------
 _TOTAL_MEM = None
 _RAM_CACHE = {"t": 0.0, "free": 0, "total": 0}
+
+
+def available_ram():
+    """RAM a model load can actually claim = free + speculative + purgeable +
+    inactive. Cached files (the bulk of inactive here) are fungible: macOS
+    evicts clean file-backed pages on demand, so fit verdicts must credit
+    them. DIFFERENT from free_ram() on purpose: that one mirrors Activity
+    Monitor's "free" (excludes cache) for the dashboard display."""
+    total = _total_mem()
+    try:
+        if sys.platform == "darwin":
+            out = subprocess.run(["vm_stat"], capture_output=True,
+                                 text=True, timeout=5).stdout
+            ps = int(re.search(r"page size of (\d+) bytes", out).group(1))
+            n = 0
+            for k in ("Pages free", "Pages speculative",
+                      "Pages purgeable", "Pages inactive"):
+                m = re.search(k + r":\s+(\d+)", out)
+                if m:
+                    n += int(m.group(1))
+            return n * ps, total
+        if os.path.isfile("/proc/meminfo"):
+            with open("/proc/meminfo") as f:
+                for line in f:
+                    if line.startswith("MemAvailable:"):
+                        return int(line.split()[1]) * 1024, total
+    except Exception:
+        pass
+    free, _ = free_ram()
+    return free, total
 
 
 def _total_mem():
@@ -3031,7 +3061,7 @@ def run_benchmark(req):
 def _scan_models_payload(store_filter=None, extra=None):
     """Scan payload shared by the /api/models/scan route and model/select."""
     machine = discovery.machine_profile()
-    free, _total = free_ram()
+    free, _total = available_ram()
     free_gb = round(free / 1073741824, 1)
     cands = discovery.all_candidates(free_gb, FRAMEWORKS, machine)
     if extra and os.path.isdir(extra):
