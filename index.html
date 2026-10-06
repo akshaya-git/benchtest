@@ -763,7 +763,7 @@ function renderResults() {
       <td>${r.iterations == null ? '–' : r.iterations}</td>
       <td>${r.tokens == null ? '…' : r.tokens}</td>
       <td><a class="cell-link" onclick="showCellDetail(${i})" title="${r.error ? esc(r.error) : 'Click for detail'}"><span class="tag ${r.status}" title="${r.truncated ? 'Response hit the max_tokens cap and was cut off — output may be incomplete' : ''}">${r.status}${r.truncated ? ' ⚠' : ''}</span></a></td>
-      <td>${r.output_url ? `<button class="mini" onclick="window.open('${r.output_url}','_blank')">Open ▸</button> <button class="mini" onclick="window.open('/output/','_blank')" title="All artifacts from this and previous runs">📁</button>` : (r.status === 'done' ? '<span style="color:var(--muted)">text</span>' : '')}</td>
+      <td>${r.output_url ? `<button class="mini" onclick="window.open('${r.output_url}','_blank')">Open ▸</button>` : (r.status === 'done' ? '<span style="color:var(--muted)">text</span>' : '')}</td>
     </tr>`;}).join('');
 
   const done = results.filter(r => r.status !== 'running');
@@ -1211,7 +1211,7 @@ async function loadHistory() {
        <td>${x.latency == null ? '–' : x.latency + 's'}</td>
        <td>${x.iterations ?? '–'}</td>
        <td>${x.tokens ?? '–'}</td><td>${x.tps ?? '–'}</td>
-       <td>${x.output_url ? `<a href="${x.output_url}" target="_blank" style="color:var(--accent)">open</a> · <a href="/output/" target="_blank" title="all artifacts">📁</a>` : '–'}</td></tr>`;
+       <td>${x.output_url ? `<a href="${x.output_url}" target="_blank" style="color:var(--accent)">open</a>` : '–'}</td></tr>`;
     }).join('');
     return `<details style="margin-bottom:10px">
       <summary style="cursor:pointer;padding:8px;background:var(--panel2);border:1px solid var(--border);border-radius:8px">

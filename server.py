@@ -2324,6 +2324,36 @@ def rawplus_generate(fw, prompt, settings, on_progress=None):
     return buffer, total_ctok, wall, truncated, metrics, rounds
 
 
+def sweep_stray_processes():
+    """Kill any process whose working directory is under the run-scratch
+    WORK_DIR. Agent harnesses spawn helper scripts (node/python/...) during
+    cells; most die with their process group, but ones that detach (observed:
+    a `node pause2.js` pinning a core for hours after its cell ended) escape
+    the group kill. Called after each agent cell and at run end."""
+    me = os.getpid()
+    try:
+        out = subprocess.run(["lsof", "-a", "-d", "cwd", "-Fn"],
+                             capture_output=True, text=True, timeout=20).stdout
+    except Exception:
+        return
+    for chunk in out.split("\np"):
+        lines = chunk.split("\n")
+        if not lines or not lines[0].isdigit():
+            continue
+        pid = int(lines[0])
+        if pid == me:
+            continue
+        for l in lines[1:]:
+            if l.startswith("n") and l[1:].startswith(WORK_DIR + os.sep):
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                    log(f"swept stray process {pid} (cwd {l[1:][len(WORK_DIR):]})",
+                        level="err")
+                except (ProcessLookupError, PermissionError):
+                    pass
+                break
+
+
 def run_cli_abortable(cmd, env, cwd, timeout, line_cb=None, fw=None):
     """Run a harness CLI so that Stop works mid-flight AND its output streams
     live: each stdout line (stderr merged) is forwarded to line_cb as it is
@@ -2573,6 +2603,7 @@ def run_harness(fw, harness, task_name, prompt, settings, task=None):
 
             out, errtext, rc, stopped, timed_out = run_cli_abortable(
                 cmd, env, workdir, CLI_TIMEOUT, line_cb=_line_handler, fw=fw)
+            sweep_stray_processes()   # detached helper scripts die with the cell
             gen = time.time() - t0
             if stopped:
                 log(f"{label} stopped by user after {gen:.0f}s",
@@ -2965,6 +2996,7 @@ def run_benchmark(req):
             r()
         for fw in list(PROCS):
             stop_framework(fw)
+        sweep_stray_processes()   # nothing a cell spawned outlives the run
         with LOCK:
             STATE["running"] = False
             STATE["current_step"] = ""
@@ -3303,19 +3335,6 @@ class Handler(BaseHTTPRequestHandler):
                 data = {"port": PROXY_PORT, **PROXY_STATE,
                         "totals": dict(PROXY_TOTALS), "log": list(PROXY_LOG)}
             self._json(data)
-        elif self.path == "/output" or self.path == "/output/":
-            # artifact folder index — the dashboard links here so users can
-            # browse every generated artifact from all runs
-            names = sorted(os.listdir(OUTPUT_DIR), reverse=True)
-            rows = "".join(
-                f'<tr><td><a href="/output/{n}">{n}</a></td>'
-                f'<td>{round(os.path.getsize(os.path.join(OUTPUT_DIR, n)) / 1024, 1)} KB</td>'
-                f'<td>{time.strftime("%m-%d %H:%M", time.localtime(os.path.getmtime(os.path.join(OUTPUT_DIR, n))))}</td></tr>'
-                for n in names if not n.startswith("_"))
-            body = (f"<h2>Artifacts ({len(names)})</h2>"
-                    "<table border=0 cellpadding=6><tr><th>File</th><th>Size</th><th>Modified</th></tr>"
-                    f"{rows}</table>")
-            self._html(body)
         elif self.path.startswith("/output/"):
             name = os.path.basename(self.path.split("?")[0])
             fp = os.path.join(OUTPUT_DIR, name)
