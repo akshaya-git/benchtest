@@ -716,7 +716,7 @@ function fmtGB(b) { return (b / 1073741824).toFixed(1) + ' GB'; }
 function renderStatus(s) {
   if (s.ram) {
     $('freeRam').textContent = fmtGB(s.ram.free);
-    $('ramSub').textContent = `of ${fmtGB(s.ram.total)} total`;
+    $('ramSub').textContent = `of ${fmtGB(s.ram.total)} total (available)`;
   }
   for (const fw of Object.keys(FRAMEWORKS)) {
     const st = (s.framework_status || {})[fw] || 'down';

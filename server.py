@@ -854,15 +854,22 @@ def free_ram():
     free = 0
     try:
         if sys.platform == "darwin":
-            out = subprocess.run(["vm_stat"], capture_output=True,
-                                 text=True, timeout=5).stdout
-            ps = int(re.search(r"page size of (\d+) bytes", out).group(1))
-            # Pages free + speculative only — inactive pages CAN be reclaimed
-            # but are not immediately available (observed: bench showed 64 GB
-            # free while Activity Monitor showed 23 GB; inactive pages need an
-            # explicit reclaim pass before a large allocation can use them)
-            free = (int(re.search(r"Pages free:\s+(\d+)", out).group(1))
-                    + int(re.search(r"Pages speculative:\s+(\d+)", out).group(1))) * ps
+            # the KERNEL's available-memory figure (same one memory_pressure
+            # reports and menu-bar monitors display). vm_stat "Pages free"
+            # under-reports (ignores reclaimable cache) and free+inactive
+            # over-reports — neither matched the system tools (observed:
+            # 64 GB vs the system's 23 GB during a 107 GB model run).
+            try:
+                mp = subprocess.run(["memory_pressure"], capture_output=True,
+                                    text=True, timeout=5).stdout
+                pct = int(re.search(r"free percentage:\s+(\d+)%", mp).group(1))
+                free = round(total * pct / 100)
+            except Exception:
+                out = subprocess.run(["vm_stat"], capture_output=True,
+                                     text=True, timeout=5).stdout
+                ps = int(re.search(r"page size of (\d+) bytes", out).group(1))
+                free = (int(re.search(r"Pages free:\s+(\d+)", out).group(1))
+                        + int(re.search(r"Pages speculative:\s+(\d+)", out).group(1))) * ps
         elif os.path.isfile("/proc/meminfo"):
             with open("/proc/meminfo") as f:
                 mi = {}
