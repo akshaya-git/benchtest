@@ -258,7 +258,7 @@
     <div class="stat"><b id="stFail">0</b> <span>FAILED</span></div>
     <div class="stat"><b id="stTps">--</b> <span>AVG TOK/S</span></div>
     <div class="stat"><b id="stBest">--</b> <span>BEST FRAMEWORK</span></div>
-    <div class="stat"><b id="stUsable">--</b> <span>USABLE (QA ≥ 90%)</span></div>
+    <div class="stat"><b id="stUsable">--</b> <span>ARTIFACTS</span></div>
     <div class="stat"><b id="stWinner">--</b> <span>WINNING COMBO</span></div>
     <span class="spacer"></span>
     <button class="mini" onclick="exportCsv()">⬇ Export CSV</button>
@@ -271,11 +271,11 @@
         <th title="Prompt processing — prefill tok/s (server-side where the framework provides it; client-side for raw)">PP tok/s</th>
         <th title="Token generation — decode tok/s (server-side where the framework provides it; client-side for raw)">TGS tok/s</th>
         <th title="Overall throughput — completion tokens / total wall time">TPS</th>
-        <th>Run time (s)</th><th>Iter</th><th>Tokens</th><th>QA</th><th>Status</th><th>Output</th>
+        <th>Run time (s)</th><th>Iter</th><th>Tokens</th><th>Status</th><th>Artifacts</th>
       </tr>
     </thead>
     <tbody id="resultsBody">
-      <tr><td colspan="13" style="color:var(--muted);text-align:center;padding:22px;">No results yet — pick harnesses &amp; a task and hit Run Benchmark.</td></tr>
+      <tr><td colspan="12" style="color:var(--muted);text-align:center;padding:22px;">No results yet — pick harnesses &amp; a task and hit Run Benchmark.</td></tr>
     </tbody>
   </table>
   </div>
@@ -491,18 +491,11 @@ function showRowDetail(r) {
   if (r.status === 'error') why.push('The cell errored before producing a result.');
   if (r.error) why.push('Error: ' + r.error);
   if (r.truncated) why.push('The reply hit the max_tokens cap and was cut off mid-generation.');
-  if (r.qa_func != null && r.qa_func < 90) why.push('The artifact scored below the 90% usability bar.');
-  if (r.req_missing && r.req_missing.length) why.push('Missing required features: ' + r.req_missing.join(', '));
-  if (r.qa_notes && !r.req_missing) why.push('QA notes: ' + r.qa_notes);
   if (!why.length && r.status === 'done') why.push('The cell completed and passed the quality gate.');
   openModal(`Cell detail — ${r.framework || '?'} / ${r.harness || '?'}`,
     `<div style="font-size:12.5px;line-height:1.9">
       ${row('Task', r.task)}${row('Model', r.model)}${row('Status', r.status)}
       ${row('Tokens', r.tokens)}${row('Run time', r.latency != null ? r.latency + 's' : null)}
-      ${row('TPS', r.tps)}${row('QA function', r.qa_func != null ? r.qa_func + '%' : null)}
-      ${row('QA quality', r.qa_qual != null ? r.qa_qual + '%' : null)}
-      ${row('QA notes', r.qa_notes)}
-      ${r.req_missing && r.req_missing.length ? `<div style="margin-top:8px"><b>Missing required features:</b><ul style="margin:4px 0 0 18px;padding:0">${r.req_missing.map(m => `<li>${esc(m)}</li>`).join('')}</ul></div>` : ''}
       ${why.length ? `<div style="margin-top:8px"><b>Why this result:</b><ul style="margin:4px 0 0 18px;padding:0">${why.map(w => `<li>${esc(w)}</li>`).join('')}</ul></div>` : ''}
       ${r.output_url ? `<div style="margin-top:8px"><a href="${esc(r.output_url)}" target="_blank" rel="noopener">Open the artifact</a></div>` : ''}
     </div>`);
@@ -561,15 +554,15 @@ async function renderComparison() {
   }
   const names = Object.keys(groups);
 
-  // wins: per run, best qa_func then lowest latency
+  // wins: per run, fastest completed cell (throughput is the comparable metric)
   const wins = {};
   for (const r of runs) {
     if (taskSel.value && r.task !== taskSel.value) continue;
     const rl = r.reasoning_level || 'unrecorded';
     if (reasonSel.value && rl !== reasonSel.value) continue;
-    const done = (r.rows || []).filter(c => c.status === 'done' && c.qa_func != null && FRAMEWORKS[c.framework]);
+    const done = (r.rows || []).filter(c => c.status === 'done' && FRAMEWORKS[c.framework]);
     if (done.length < 2) continue;
-    const win = done.slice().sort((a, b) => (b.qa_func - a.qa_func) || ((a.latency || 1e9) - (b.latency || 1e9)))[0];
+    const win = done.slice().sort((a, b) => ((b.tps || 0) - (a.tps || 0)))[0];
     wins[gk(win)] = (wins[gk(win)] || 0) + 1;
   }
 
@@ -579,29 +572,22 @@ async function renderComparison() {
     const tgs = g.map(c => c.server_tgs ?? c.tgs);
     return {
       name: n, cells: g.length,
-      qa: avg(g.map(c => c.qa_func)),
-      qual: avg(g.map(c => c.qa_qual)),
-      usable: 100 * g.filter(c => c.usable).length / g.length,
       tps: avg(g.map(c => c.tps)),
       tgs: avg(tgs),
       ttft: avg(g.map(c => c.server_ttft_avg)),
       wins: wins[n] || 0,
     };
-  }).sort((a, b) => (b.qa - a.qa) || (b.tps - a.tps));
+  }).sort((a, b) => (b.tps - a.tps));
 
   const row = (st) => {
-    const qcol = st.qa == null ? 'var(--muted)' : st.qa >= 90 ? 'var(--green)' : st.qa >= 70 ? 'var(--amber)' : 'var(--red)';
     return `<tr><td><b>${esc(st.name)}</b></td><td>${st.cells}</td>` +
-      `<td style="color:${qcol};font-weight:700">${st.qa == null ? '–' : st.qa.toFixed(1)}</td>` +
-      `<td>${st.qual == null ? '–' : st.qual.toFixed(0)}</td>` +
-      `<td>${st.usable.toFixed(0)}%</td>` +
       `<td>${st.tps == null ? '–' : st.tps.toFixed(1)}</td>` +
       `<td>${st.tgs == null ? '–' : st.tgs.toFixed(1)}</td>` +
       `<td>${st.ttft == null ? '–' : st.ttft.toFixed(2)}s</td>` +
       `<td>${st.wins ? '🏆 ' + st.wins : '–'}</td></tr>`;
   };
   $('cmpScoreboard').innerHTML =
-    `<table><thead><tr><th>${$('cmpGroup').value === 'model' ? 'Model' : 'Framework'}</th><th>Cells</th><th>QA func</th><th>QA qual</th><th>Usable</th><th>TPS tok/s</th><th>TGS tok/s</th><th>TTFT</th><th>Wins</th></tr></thead>` +
+    `<table><thead><tr><th>${$('cmpGroup').value === 'model' ? 'Model' : 'Framework'}</th><th>Cells</th><th>TPS tok/s</th><th>TGS tok/s</th><th>TTFT</th><th>Wins</th></tr></thead>` +
     `<tbody>${stats.map(row).join('')}</tbody></table>` +
     `<div style="font-size:11px;color:var(--muted);margin-top:6px">${cells.length} completed cells across ${new Set(cells.map(c => c._rl)).size} reasoning setting(s)</div>` +
     (errored.length ? `<details style="margin-top:8px;font-size:12px"><summary style="cursor:pointer;color:var(--red)">${errored.length} errored cell(s) excluded from the comparison — click to see why</summary>` +
@@ -624,10 +610,10 @@ async function renderComparison() {
       });
       return `<tr><td>${esc(h)}</td>${vals.map(v => `<td>${v}</td>`).join('')}</tr>`;
     }).join('');
-    return `<h3 style="margin:14px 0 6px">${metric === 'tps' ? 'TPS tok/s' : 'QA functionality %'} by harness</h3>` +
+    return `<h3 style="margin:14px 0 6px">TPS tok/s by harness</h3>` +
       `<table><thead>${head}</thead><tbody>${body}</tbody></table>`;
   };
-  $('cmpMatrices').innerHTML = matrix('tps') + matrix('qa_func');
+  $('cmpMatrices').innerHTML = matrix('tps');
 }
 
 function drawCmpChart(stats) {
@@ -776,10 +762,8 @@ function renderResults() {
       <td>${r.latency == null ? '…' : r.latency.toFixed(2)}</td>
       <td>${r.iterations == null ? '–' : r.iterations}</td>
       <td>${r.tokens == null ? '…' : r.tokens}</td>
-      <td>${r.qa_func == null ? (r.status === 'done' ? '–' : '…')
-          : `<span class="qa ${r.qa_func >= 90 ? 'good' : r.qa_func >= 70 ? 'mid' : 'bad'}" title="${esc(r.qa_notes)}\nquality: ${r.qa_qual}%">${r.qa_func}%</span>`}</td>
       <td><a class="cell-link" onclick="showCellDetail(${i})" title="${r.error ? esc(r.error) : 'Click for detail'}"><span class="tag ${r.status}" title="${r.truncated ? 'Response hit the max_tokens cap and was cut off — output may be incomplete' : ''}">${r.status}${r.truncated ? ' ⚠' : ''}</span></a></td>
-      <td>${r.output_url ? `<button class="mini" onclick="window.open('${r.output_url}','_blank')">Output ▸</button>` : (r.status === 'done' ? '<span style="color:var(--muted)">text</span>' : '')}</td>
+      <td>${r.output_url ? `<button class="mini" onclick="window.open('${r.output_url}','_blank')">Open ▸</button> <button class="mini" onclick="window.open('/output/','_blank')" title="All artifacts from this and previous runs">📁</button>` : (r.status === 'done' ? '<span style="color:var(--muted)">text</span>' : '')}</td>
     </tr>`;}).join('');
 
   const done = results.filter(r => r.status !== 'running');
@@ -793,23 +777,18 @@ function renderResults() {
   done.filter(r => r.tps).forEach(r => (byFw[r.framework] = byFw[r.framework] || []).push(r.tps));
   const best = Object.entries(byFw).map(([f, v]) => [f, v.reduce((a, b) => a + b, 0) / v.length]).sort((a, b) => b[1] - a[1])[0];
   $('stBest').textContent = best ? `${best[0].toUpperCase()} (${best[1].toFixed(1)})` : '--';
-  const qaed = done.filter(r => r.qa_func != null);
-  $('stUsable').textContent = qaed.length ? `${qaed.filter(r => r.usable).length}/${qaed.length}` : '--';
-  // winning combo: usable cells ranked by QA then TPS
-  const usableCells = done.filter(r => r.usable && r.qa_func != null);
-  if (usableCells.length) {
-    // best quality first; ties broken by FASTEST wall time (then tps) —
-    // "winner" = best result soonest, not most decode-efficient
-    const win = usableCells.slice().sort((a, b) =>
-      (b.qa_func - a.qa_func) ||
-      ((a.latency == null ? 1e9 : a.latency) - (b.latency == null ? 1e9 : b.latency)) ||
-      ((b.tps || 0) - (a.tps || 0)))[0];
+  const withArtifacts = done.filter(r => r.output_url);
+  $('stUsable').textContent = withArtifacts.length ? `${withArtifacts.length}/${done.length}` : '--';
+  // winning combo: fastest completed cell with an artifact
+  if (withArtifacts.length) {
+    const win = withArtifacts.slice().sort((a, b) =>
+      ((a.latency == null ? 1e9 : a.latency) - (b.latency == null ? 1e9 : b.latency)))[0];
     $('stWinner').textContent = `${win.framework.toUpperCase()} / ${win.harness}`;
     $('stWinner').parentElement.title =
-      `QA ${win.qa_func}% · ${win.latency}s · ${(win.tps || 0).toFixed(1)} tok/s · ${win.task}`;
+      `${win.latency}s · ${(win.tps || 0).toFixed(1)} tok/s · ${win.task}`;
   } else {
     $('stWinner').textContent = '--';
-    $('stWinner').parentElement.title = 'no usable (QA ≥ 90%) cells yet';
+    $('stWinner').parentElement.title = 'no completed cells with artifacts yet';
   }
 }
 
@@ -1221,27 +1200,24 @@ async function loadHistory() {
   _histRows = [];   // row objects the detail modal reads by index
   $('histList').innerHTML = runs.map(r => {
     const done = r.rows.filter(x => x.status === 'done').length;
-    const usable = r.rows.filter(x => x.usable).length;
-    const win = r.rows.filter(x => x.usable).sort((a, b) =>
-      (b.qa_func - a.qa_func) || ((a.latency || 1e9) - (b.latency || 1e9)))[0];
+    const win = r.rows.filter(x => x.status === 'done' && x.output_url)
+      .sort((a, b) => ((a.latency || 1e9) - (b.latency || 1e9)))[0];
     const rows = r.rows.map(x => {
       const idx = _histRows.push(x) - 1;
-      const tip = [x.error, x.truncated ? 'reply hit the max_tokens cap' : '',
-                   x.qa_notes].filter(Boolean).join(' — ');
+      const tip = [x.error, x.truncated ? 'reply hit the max_tokens cap' : '']
+                  .filter(Boolean).join(' — ');
       return `<tr><td>${esc(x.framework)}</td><td>${esc(x.harness)}</td>
        <td><a class="cell-link" onclick="showRowDetail(_histRows[${idx}])" title="${esc(tip)}"><span class="tag ${x.status}" >${x.status}${x.truncated ? ' ⚠' : ''}</span></a></td>
        <td>${x.latency == null ? '–' : x.latency + 's'}</td>
        <td>${x.iterations ?? '–'}</td>
        <td>${x.tokens ?? '–'}</td><td>${x.tps ?? '–'}</td>
-       <td>${x.qa_func == null ? '–' : `<span class="qa ${x.qa_func >= 90 ? 'good' : x.qa_func >= 70 ? 'mid' : 'bad'}" title="${esc(x.qa_notes || '')}">${x.qa_func}%</span>`}</td>
-       <td>${x.usable == null ? '–' : (x.usable ? '✓' : '✗')}</td>
-       <td>${x.output_url ? `<a href="${x.output_url}" target="_blank" style="color:var(--accent)">output</a>` : '–'}</td></tr>`;
+       <td>${x.output_url ? `<a href="${x.output_url}" target="_blank" style="color:var(--accent)">open</a> · <a href="/output/" target="_blank" title="all artifacts">📁</a>` : '–'}</td></tr>`;
     }).join('');
     return `<details style="margin-bottom:10px">
       <summary style="cursor:pointer;padding:8px;background:var(--panel2);border:1px solid var(--border);border-radius:8px">
         <b>${esc(r.task)}</b> · ${new Date((r.ts || 0) * 1000).toLocaleString()}
-        · ${done}/${r.rows.length} done · ${usable} usable
-        ${win ? `· 🏆 ${esc(win.framework)} / ${esc(win.harness)} (QA ${win.qa_func}%)` : ''}
+        · ${done}/${r.rows.length} done
+        ${win ? `· 🏆 ${esc(win.framework)} / ${esc(win.harness)} (${win.latency}s)` : ''}
         <button class="mini" data-file="${esc(r.file)}" onclick="deleteRun(this, event)"
           title="Permanently delete this run — removes its runs/*.json and any output files only it references"
           style="margin-left:10px">🗑</button>
@@ -1251,7 +1227,7 @@ async function loadHistory() {
       </div>
       <div style="overflow-x:auto;margin-top:6px">
       <table><thead><tr><th>Framework</th><th>Harness</th><th>Status</th><th>Run time</th><th>Iter</th>
-        <th>Tokens</th><th>TPS</th><th>QA</th><th>Usable</th><th>Output</th></tr></thead>
+        <th>Tokens</th><th>TPS</th><th>Artifacts</th></tr></thead>
       <tbody>${rows}</tbody></table></div>
     </details>`;
   }).join('') || '<p style="color:var(--muted)">No saved runs yet.</p>';

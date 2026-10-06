@@ -47,10 +47,8 @@ so it still starts — fix the JSON (a trailing comma is the usual culprit) and 
 - **"stopped by user"** — you hit Stop; expected.
 - **Truncated (⚠)** — the response hit `max_tokens`. Raise *Max tokens* (agents) or
   *Raw max tokens* and rerun, or use **raw+** which auto-continues.
-- **QA below 90%** — the artifact was produced but scored low. Read the QA notes (the
-  probe names the exact broken behavior) and open the **Output** link; this is a real
-  capability datum, not a bug. A whole column failing one identical check is usually a
-  gate bug — compare against a known-good artifact before believing it.
+- **Artifact looks wrong** — open it via the **Artifacts** link and judge visually;
+  the tool records throughput, the artifacts are yours to review.
 
 ## The model picker shows everything as "too-large"
 

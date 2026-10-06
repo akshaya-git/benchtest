@@ -3,8 +3,8 @@
 **Local LLM benchmarking for Apple Silicon.** Compare how the same model performs
 across the major local inference frameworks (OMLX, MTPLX, MLX-VLM, MLX-Serve) and
 across harnesses (raw API, raw+ streaming, and the agent CLIs pi / opencode / goose /
-hart) — with real throughput (TPS/TGS/PP), latency, and a quality gate (QA) on the
-actual artifact each cell produces.
+hart) — with real throughput (TPS/TGS/PP), latency, and the actual artifact
+each cell produces, linked for your own review.
 
 Everything runs **locally** against models already on your machine. No cloud, no
 accounts, no telemetry. The backend is **pure Python standard library** — there is
@@ -24,7 +24,6 @@ For every **framework × harness** cell on a chosen task, benchtest records:
 | **Run time** | End-to-end wall time for the cell |
 | **Iter** | Model requests the harness made (agent loops, raw+ continuations; raw = 1) |
 | **Tokens** | Completion tokens produced |
-| **QA** | Automated quality score (functionality / quality) of the produced artifact, with a 90% "usable" threshold |
 | **Output** | The actual artifact (HTML/text), saved and viewable |
 
 The dashboard shows a live activity feed, a per-cell streaming tail, a comparison
@@ -37,7 +36,7 @@ Harness Activity feed shows real agent narration: tool calls with target
 paths, thinking phases, chat replies, and per-step token counts. Their token totals are the
 model's exact output tokens (not word-count estimates), and sibling files an
 agent writes next to its HTML (e.g. `app.js`) are inlined into the collected
-artifact so QA and the Output button see what was actually built.
+artifact so the Artifacts links show what was actually built.
 
 ---
 
@@ -80,9 +79,9 @@ artifact so QA and the Output button see what was actually built.
 
   > **Quality validation (full-precision vs quantized):** to check whether a
   > quantized build (e.g. the 8-bit starter) is losing quality, run the same task
-  > with the **bf16** model and compare the QA scores. Select `Qwen3.8-27B-bf16`
+  > with the **bf16** model and compare throughput. Select `Qwen3.8-27B-bf16`
   > per framework in the *Model per Framework* panel, run the task, then repeat
-  > with the 8-bit model and diff the `qa_func` / `qa_qual` / `usable` columns.
+  > with the 8-bit model and diff the TPS / run-time columns, then compare artifacts side by side via the Artifacts links.
   > The bf16 model needs ~51 GB of free RAM, so stop other framework servers
   > (e.g. OMLX) first. It is an HF-cache model, so it is offered for OMLX /
   > MLX-VLM / MLX-Serve; MTPLX uses its own store and would need a separate
@@ -169,19 +168,6 @@ for how it all fits together.
 Frameworks are run **one at a time** so they never compete for RAM/GPU. You can
 **Stop** a run at any time — in-flight work is killed and partial results are kept.
 
-### Re-scoring saved runs
-
-Artifacts stay on disk in `outputs/`, so when the QA gate improves (e.g. the
-runtime probe gets smarter) old scores can be corrected **without re-running
-any model cell**:
-
-```
-python3 rescore.py                                  # all runs/*.json
-python3 rescore.py runs/20260929-095401.json        # specific files
-```
-
-Only rows whose artifact still exists are updated; the original file is kept
-as `<name>.json.bak`. Wait for a run to finish before re-scoring its file.
 
 ---
 

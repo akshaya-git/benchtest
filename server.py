@@ -54,9 +54,9 @@ DEFAULT_FRAMEWORKS = {
     "omlx": {
         "name": "OMLX",
         "model_source": "hf",
-        "notes": "Model, context (131072), max-tokens (65536) and reasoning are applied PER MODEL from ~/.omlx/model_settings.json (entry: mlx-community--Qwen3.8-27B-8bit) at request time — the server starts bare, discovers models from the HF cache, and each request's model id selects its settings entry. Reasoning is task-type driven (top-level 'reasoning' config: low for standard tasks, medium for LONG): the benchmark rewrites the model entry's chat_template_kwargs.reasoning_effort before start and restores it after the run. Same base weights as MLX-VLM/MLX-Serve. MTP speculative decoding is ON via the embedded mlx-vlm engine (vlm_mtp_enabled=true, vlm_mtp_draft_model=mlx-community--Qwen3.8-27B-MTP-8bit) — the same draft arrangement MLX-VLM uses, user-confirmed working; the plain mtp_enabled/draft_model keys were inert in A/B (18.2 vs 18.1 TGS). The Jundot oQ8e build was retired after QA 25 on LONG tasks — see run 20260923-110534.",
+        "notes": "Model, context (131072), max-tokens (65536) and reasoning are applied PER MODEL from ~/.omlx/model_settings.json at request time — the server starts bare, discovers models from the HF cache, and each request's model id selects its settings entry. Reasoning is task-type driven (top-level 'reasoning' config) via the model entry's chat_template_kwargs.reasoning_effort, rewritten before start and restored after. MTP speculative decoding via the embedded mlx-vlm engine when the entry sets vlm_mtp_enabled + vlm_mtp_draft_model.",
         "port": 7001,
-        "model": "mlx-community--Qwen3.8-27B-8bit",
+        "model": "Jundot/Qwen3.8-27B-oQ8e-mtp",
         "model_gb": 28, "ctx_tokens": 131072,
         # omlx has no CLI reasoning flag — the level lives in this per-model
         # settings file (applied at request time). The benchmark rewrites
@@ -108,7 +108,7 @@ DEFAULT_FRAMEWORKS = {
         "model": "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality",
         "draft_model": "mlx-community/Qwen3.8-27B-MTP-8bit",
         "model_gb": 28, "ctx_tokens": 131072,
-        "notes": "mlx_vlm.server with MTP speculative decoding: the MTP-8bit draft pairs with the Youssofal-Quality weights (identical architecture to the dense 8bit - verified tensor-by-tensor in run 20260926-181100: 6/6 cells, QA 100, 19-38 tok/s). Reasoning maps to --enable-thinking; thinking_budget is hard-blocked by mlx_vlm while the draft is loaded, so no budget flags. No ctx flag - serves the model's native context (adopted at start). Per-request metrics from its JSON /metrics.",
+        "notes": "mlx_vlm.server with MTP speculative decoding: the MTP-8bit draft pairs with the Youssofal-Quality weights. Reasoning maps to --enable-thinking; thinking_budget is hard-blocked by mlx_vlm while the draft is loaded, so no budget flags. No ctx flag - serves the model's native context (adopted at start). Per-request metrics from its JSON /metrics.",
         "reasoning_flags": {
             "low": [],
             "medium": ["--enable-thinking"],
@@ -533,7 +533,7 @@ TASKS = [
     {"id": "logreport", "name": "Log Analyst · failure report", "artifact": "report.html",
      "static_report": True,
      "prompt": "You are given the logs of a PREVIOUS benchmark run that tested local LLM inference frameworks (OMLX, MTPLX, MLX-VLM, MLX-Serve) across agent harnesses (raw, raw+, pi, opencode, Goose, hart). The input files are in the directory "
-               + WORK_DIR + "/logreport-fixture/ — read them: runs.json (per-cell records: framework, harness, status, latency, qa_func, error), errors.log (the orchestrator's failure lines), bench-excerpt.log (its full log window) and omlx.log / mtplx.log / mlxlm.log / mlxserve.log (framework server error excerpts). The same runs.json and errors.log content is also inlined below between <input> markers.\n\n"
+               + WORK_DIR + "/logreport-fixture/ — read them: runs.json (per-cell records: framework, harness, status, latency, error), errors.log (the orchestrator's failure lines), bench-excerpt.log (its full log window) and omlx.log / mtplx.log / mlxlm.log / mlxserve.log (framework server error excerpts). The same runs.json and errors.log content is also inlined below between <input> markers.\n\n"
                "Do exactly three things:\n"
                "1. Classify every cell in runs.json as passed (status \"done\") or failed (any other status).\n"
                "2. For each failed cell, find its root cause: match its framework and harness against errors.log / bench-excerpt.log and quote the single most relevant log line. Known failure classes in these logs: \"empty response\", \"timeout after 7200s\", \"no output\", \"stopped by user\", stream-stall breaks, memory-guard rejections.\n"
@@ -566,553 +566,6 @@ TASKS = [
      "artifact": "index.html",
      "prompt": "Build a single-file 'Agent Console' — a chat UI that turns any OpenAI-compatible local endpoint into a tool-calling agent. Everything client-side, no libraries. Sections: (1) Connect: collapsible settings panel (base URL, e.g. http://localhost:7001/v1, optional API key), a Connect button that calls GET {base}/models, renders returned ids in a model dropdown, and shows a connected/error banner. (2) Chat: message list with user/assistant bubbles, markdown rendering for code and lists, timestamps, a 'clear conversation' button, and the last 20 exchanges persisted to localStorage and restored on reload. (3) Agent loop with tool calling: define exactly 4 built-in tools — http_get(url) for HTTP GET returning response text, http_post(url, body) for HTTP POST returning response text, now() for the current timestamp, and math_eval(expression) for safe arithmetic — and send them in the request's tools array using the OpenAI tool-calling protocol. When the model responds with tool_calls, execute each tool in JavaScript, append the results as role=tool messages, and re-request, looping until the model answers with plain content or 5 iterations. Render every tool call and its result as a collapsible block inside the transcript. (4) Skills: a Skills panel where the user loads a SKILL.md file via a file picker (or pastes one) — parse its YAML frontmatter into name and description, list loaded skills with enable/disable toggles, and prepend the body of every enabled skill to the system prompt of the next request. (5) MCP deploy: a Download MCP server button that generates a complete single-file Python MCP server (official mcp package, stdio transport, at least 3 tools wrapping the same HTTP helpers against the configured base URL) and downloads it as bench-mcp-server.py. (6) Self-test panel with a button that runs at least 5 checks and renders one line per check starting with a check mark or a cross, plus a final summary line in the exact form N/M passed: models endpoint reachable, chat completion returns content, a tool-call round-trip works (offer a math tool and ask the model to add 2 plus 2 via the tool), markdown rendering works, and SKILL.md frontmatter parsing works. Connection errors render as a readable error bubble. Return only the complete HTML."},
 ]
-
-
-# Per-task requirements: each entry is [feature label, regex]. The QA gate
-# checks every requirement against the artifact content and blends the pass
-# rate into qa_func (60%) with the generic HTML checks (40%). This is what
-# stops feature-incomplete artifacts from scoring 100 (observed: agentconsole
-# cells missing 8-10 of 12 required features all scored 100 on generic checks).
-REQUIREMENTS = {
-    "tetris": [["game board (canvas or grid)", r"<canvas|grid|board|cell"], ["7 tetromino pieces", r"tetromino|SHAPES|pieces"],
-               ["rotation", r"rotat"], ["line clearing", r"clear.{0,6}line|line.{0,6}clear|collapse"],
-               ["score", r"score"], ["levels", r"level"], ["next-piece preview", r"next"],
-               ["keyboard controls", r"keydown|keyup|keyboard"],
-               ["game loop", r"requestAnimationFrame|setInterval|setTimeout"],
-               ["game-over state", r"game.{0,4}over|gameover"]],
-    "snake": [["game board (canvas or grid)", r"<canvas|grid|board|cell"], ["snake body/movement", r"snake"],
-              ["food", r"food|apple|berry"], ["keyboard controls", r"keydown|keyup|keyboard"],
-              ["score", r"score"], ["speed increase", r"speed|interval"],
-              ["game-over on collision", r"game.{0,4}over|collision"],
-              ["grid/walls", r"grid|wall|wrap"], ["restart", r"restart|play.{0,4}again"],
-              ["game loop", r"requestAnimationFrame|setInterval"]],
-    "pong": [["game board (canvas or grid)", r"<canvas|grid|board|cell"], ["paddles", r"paddle"], ["ball", r"ball"],
-             ["AI opponent", r"\bai\b|computer|cpu"], ["mouse/keyboard control", r"mousemove|keydown|keyboard"],
-             ["score", r"score"], ["win condition", r"win"], ["speed increase on hit", r"speed"],
-             ["center line", r"center|dashed"], ["reset/serve after point", r"reset|serve"]],
-    "todo": [["add items", r"add.?todo|addItem|add.{0,10}item"],
-             ["complete toggle", r"toggle|checkbox|complete"], ["delete items", r"delete|remove"],
-             ["localStorage persistence", r"localStorage"], ["filters (all/active/done)", r"filter"],
-             ["items-left count", r"count|items.?left"], ["edit items", r"edit|dblclick"],
-             ["clear completed", r"clear"], ["empty state", r"empty|no items"],
-             ["list structure", r"<ul|<li|list"]],
-    "fib": [["plain-english explanation first", r"(?s)^[^`]{100,}"],
-            ["python code", r"def\s+\w+"], ["memoization", r"memo|cache"],
-            ["fibonacci function", r"fib"],
-            ["base case", r"base.?case|n\s*[<=]+\s*\d|n\s*==\s*\d|return\s+n\b|len\s*<\s*2"],
-            ["test/assert snippet", r"assert|test|print"]],
-    "markdown": [["headings", r"heading|<h1"], ["bold/italic", r"bold|italic|<strong|<em>"],
-                 ["inline code", r"inline.{0,4}code|<code"], ["fenced code blocks", r"fence|code.?block"],
-                 ["lists", r"list|<ul|<ol"], ["tables", r"table"],
-                 ["spec test panel", r"spec|test"], ["20+ test cases", r"20|test.?cases"],
-                 ["pass/fail counts", r"pass.{0,10}(fail|total)|dpass|passcount|testresults"],
-                 ["live preview", r"preview|live|oninput|input.?event|\'input\'|\"input\"|render.{0,10}\(\)"],
-                 ["localStorage", r"localStorage"]],
-    "agentconsole": [["connect + models dropdown", r"(?i)connect|models"],
-                     ["chat bubbles", r"(?i)bubble|\\.user|\\.assistant|message"],
-                     ["localStorage history", r"(?i)localstorage"],
-                     ["agent tool loop", r"(?i)tool_calls|tool.?call"],
-                     ["built-in tools defined", r"(?i)http_get|http_post|math_eval"],
-                     ["skill loader + frontmatter", r"(?i)frontmatter|yaml|skill"],
-                     ["MCP server generator", r"(?i)mcp.{0,60}(server|stdio|package)"],
-                     ["self-test panel", r"(?i)self.?test"],
-                     ["single-file html", r"<!DOCTYPE html"]],
-    "codereview": [["SQL injection flagged", r"(?i)sql.{0,30}inject|inject.{0,40}(sql|query|get_user)"],
-                   ["mutable default flagged", r"(?i)mutable.{0,30}default|default.{0,20}argument"],
-                   ["bare except flagged", r"(?i)bare.{0,20}except|except\\s*:|swallow"],
-                   ["off-by-one flagged", r"(?i)off.by.one|skip.{0,25}(last|row|item)"],
-                   ["resource leak flagged", r"(?i)(leak|never closed|not closed|unclosed|without closing)"],
-                   ["severities assigned", r"(?i)(critical|major|minor)"],
-                   ["fix suggestions", r"(?i)(fix|recommend|should be|use a context manager)"],
-                   ["markdown structure", r"(?i)(^|\\n)#|severity"]],
-    # --- retired tasks (chip8 / raytracer / spreadsheet) — their gates are
-    # kept so historical runs rescore with the same task-specific checks ---
-    "chip8": [["canvas display", r"<canvas"], ["opcodes (draw/CLS)", r"00E0|CLS|sprite|draw"],
-              ["keypad input", r"keypad|keydown|keyboard"], ["timers (delay/sound)", r"delay|timer|sound|beep|audio"],
-              ["ROM/program load", r"rom|chip8"], ["registers/memory", r"register|V0|memory"],
-              ["self-test panel", r"self.?test|test"], ["pass/fail output", r"pass.{0,10}fail|pass/fail"],
-              ["screen rendering", r"render|draw|pixel"], ["fetch/decode/execute loop", r"fetch|decode|execute|opcode"]],
-    "raytracer": [["vec3 math", r"vec3|vector"], ["sphere intersection", r"sphere|intersect"],
-                  ["anti-aliasing", r"anti.?alias|samples"], ["diffuse material", r"diffuse|lambert"],
-                  ["metal material", r"metal"], ["glass/dielectric", r"glass|dielectric|refract"],
-                  ["camera", r"camera"], ["progressive render", r"progressive"],
-                  ["progress bar", r"progress"], ["unit tests", r"test|assert"]],
-    "spreadsheet": [["grid rendering", r"grid|table|cell"], ["formula parsing", r"formula|parse"],
-                    ["SUM function", r"SUM"], ["AVERAGE function", r"AVERAGE|AVG"],
-                    ["cell references", r"A1|B2"], ["recalculation", r"recalc|eval"],
-                    ["cell selection", r"select|active"], ["edit in place", r"edit|input|contenteditable"],
-                    ["formula bar", r"formula.{0,4}bar|fx"], ["error handling", r"#ERR|error|NaN|#REF"]],
-    # --- active tasks ---
-    "webdb": [["embedded data store", r"(?i)(localstorage|data[\s-]?store|database)"],
-              ["seed data", r"(?i)seed"],
-              ["add product form", r"(?i)add.{0,20}(product|item|form)"],
-              ["edit or update", r"(?i)\b(edit|update)"],
-              ["delete or remove", r"(?i)\b(delete|remove)"],
-              ["search / filter", r"(?i)search|filter"],
-              ["dashboard totals", r"(?i)(total|dashboard|stats)"],
-              ["self-test panel with N/M passed", r"(?i)self.?test"],
-              ["single-file html", r"<!DOCTYPE html"]],
-    "skillbuild": [["yaml frontmatter", r"---"],
-                   ["name and description", r"(^|\n)\s*(name|description):"],
-                   ["when-to-use guidance", r"(?i)(when to use|use (this|when)|usage|trigger|scope)"],
-                   ["numbered runbook", r"(?m)^\s*[1-9]\."],
-                   ["concrete commands", r"(?i)(curl |python3|GET /api|POST /api)"],
-                   ["pitfalls section", r"(?i)pitfall|false conclusion|avoid"]],
-    "mcpbuild": [["mcp package import", r"(?i)(from mcp|import mcp)"],
-                 ["server instance", r"(?i)(MCPServer|FastMCP|mcp\s*=\s*)"],
-                 ["four tool decorators", r"(?i)@mcp\.tool[\s\S]*@mcp\.tool[\s\S]*@mcp\.tool[\s\S]*@mcp\.tool"],
-                 ["python functions", r"(?m)def "],
-                 ["docstrings per tool", r'"""'],
-                 ["stdio entrypoint", r"(?i)(__main__|\.run\(|stdio)"]],
-    "bugfix": [["expense tracker features kept", r"(?i)(expense|amount|category)"],
-               ["add / delete present", r"(?i)(add|delete|remove)"],
-               ["filter / search present", r"(?i)(filter|search)"],
-               ["persistence present", r"(?i)localstorage|persist"],
-               ["self-test panel intact", r"(?i)self.?test"],
-               ["single-file html", r"<!DOCTYPE html"]],
-    "logreport": [["summary table", r"<table"],
-                  ["pass/fail counts", r"(?i)(passed?|failed?|success)"],
-                  ["success rate percentage", r"\d+(\.\d+)?\s*%"],
-                  ["failure details with error strings", r"(?i)(empty response|timeout|no output|stopped|exited|error)"],
-                  ["per-framework breakdown", r"(?i)(omlx|mtplx|mlx-vlm|mlx-serve|mlxlm|mlxserve)"],
-                  ["root-cause log quote", r"(?i)(log|trace|line)"],
-                  ["recommendations section", r"(?i)recommendation|next step"],
-                  ["single-file html", r"<!DOCTYPE html"]],
-}
-
-# ---------------------------------------------------------------------------
-# Runtime QA probe. The requirement regexes above can only check that the
-# artifact MENTIONS a feature — a page whose renderer has a fatal logic bug
-# still contains every keyword (observed: three markdown artifacts scored 100
-# while their preview rendered nothing at all, one reporting "0 / 0" in its
-# own test panel). When a Chrome-based browser is available, the gate loads a
-# disposable copy of the artifact headlessly, performs the task's core
-# interaction (type markdown → check the preview DOM; enter endpoint URL →
-# connect → send a message; press Start → watch the canvas animate) and
-# scores what the page actually renders. If no browser is found the gate
-# falls back to regex-only scoring and says so in qa_notes.
-# ---------------------------------------------------------------------------
-_CHROME_CANDIDATES = [
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    "/Applications/Chromium.app/Contents/MacOS/Chromium",
-    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-    "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
-]
-
-
-def find_chrome():
-    """A Chrome-like binary for the runtime probe, or None. chrome-headless-
-    shell (bundled by puppeteer/playwright installs) is preferred: it starts
-    cleanly with a throwaway profile. A full Chrome build hangs on this Mac
-    when --user-data-dir is passed, so the caller skips the profile for it."""
-    override = CONFIG.get("qa_chrome_path")
-    if override:
-        p = os.path.expanduser(override)
-        if os.path.exists(p):
-            return p
-    for pattern in ("~/.cache/puppeteer/chrome-headless-shell/*/chrome-headless-shell-mac-arm64/chrome-headless-shell",
-                    "~/Library/Caches/ms-playwright/chromium-*/chrome-mac/chrome"):
-        hits = sorted(glob.glob(os.path.expanduser(pattern)))
-        if hits:
-            return hits[-1]  # newest installed version
-    for c in _CHROME_CANDIDATES:
-        if os.path.exists(c):
-            return c
-    return shutil.which("chromium") or shutil.which("google-chrome") \
-        or shutil.which("chrome-headless-shell")
-
-
-# Per-task probe config. Actions run in order (each waits `wait` ms after
-# firing); checks are evaluated after the last action settles. A probe only
-# RUNS if its primary input target exists — a page whose UI differs so much
-# the actions can't find their targets falls back to regex scoring rather
-# than being punished for the probe's own blindness.
-QA_PROBES = {
-    "markdown": {
-        "actions": [
-            {"type": "type", "find": "textarea",
-             "value": "# ZZ Heading\n\n**ZZ bold** and *ZZ italic* and `ZZ code`\n\n- ZZ item1\n- ZZ item2",
-             "wait": 300},
-            {"type": "click", "match": r"render|preview|convert|compile|run tests|re-run", "wait": 900},
-        ],
-        "checks": [
-            {"id": "heading rendered", "sel": "h1,h2", "text": "ZZ"},
-            {"id": "bold rendered", "sel": "strong,b", "text": "ZZ bold"},
-            {"id": "italic rendered", "sel": "em,i", "text": "ZZ italic"},
-            {"id": "code rendered", "sel": "code", "text": "ZZ code"},
-            {"id": "list rendered", "sel": "li", "text": "ZZ item", "minCount": 2},
-        ],
-    },
-    "agentconsole": {
-        "actions": [
-            {"type": "type", "find": "input", "match": r"base.?url|endpoint|server",
-             "value": "@BASE_URL@", "wait": 300},
-            {"type": "click", "match": r"connect", "wait": 2200},
-            {"type": "type", "find": "textarea", "value": "Say hi", "wait": 300},
-            {"type": "click", "match": r"send|submit", "wait": 3200},
-        ],
-        "checks": [
-            # "models dropdown populated" is validated against the REAL model
-            # list fetched from the endpoint (cfg.servedModels): a fixed
-            # minOptions threshold unfairly failed single-model servers, where
-            # an artifact that replaces the placeholder leaves only 1 option
-            {"id": "models dropdown populated", "sel": "select", "optionMatch": True},
-            {"id": "reply rendered", "domGrows": 20},
-        ],
-        "budget": 12000,
-    },
-    "tetris": "canvas", "snake": "canvas", "pong": "canvas",
-    "raytracer": "canvas",   # retired task — probe kept for historical rescores
-    "webdb": {
-        # the self-test runs against IndexedDB — asynchronous REAL-TIME I/O
-        # that virtual time does not wait for. Two accommodations: the
-        # artifact is loaded over HTTP from this server (file:// origins are
-        # unreliable for IDB), and measure() gates the final report on a
-        # same-origin hold request (~4.5s of real time) so the database
-        # callbacks complete before the DOM is graded.
-        "async": True,
-        "actions": [
-            {"type": "click",
-             "match": r"self.?test|automated tests|run tests|diagnostics",
-             "wait": 1500},
-        ],
-        "checks": [
-            {"id": "self-test renders results",
-             "bodyRegex": r"\d+\s*(?:/|of)\s*\d+\s*(?:passed|checks?|ok)|\d+\s+passed"},
-            {"id": "all self-tests passing", "noMatch": True,
-             "bodyRegex": r"✗"},
-        ],
-        "budget": 12000,
-    },
-    "bugfix": {
-        "actions": [
-            {"type": "click",
-             "match": r"self.?test|automated tests|run tests|diagnostics",
-             "wait": 1500},
-        ],
-        "checks": [
-            {"id": "self-test renders results", "bodyRegex": r"\d+\s*/\s*\d+\s*passed"},
-            {"id": "all four bugs fixed", "noMatch": True,
-             "bodyRegex": r"✗"},
-        ],
-        "budget": 9000,
-    },
-    "canvas": {  # shared config for canvas-rendered tasks
-        # Enter starts from a menu in most games; Space is avoided — pong-style
-        # games bind it to pause/resume, which would freeze the game right
-        # after the probe starts it (observed: three working pong artifacts
-        # scored 65 because the probe's Space press paused them). The canvas
-        # click comes FIRST while nothing is running yet, so it can only
-        # start click-to-start games, never pause an already-running one.
-        "actions": [
-            {"type": "key", "key": "Enter", "wait": 250},
-            {"type": "canvasClick", "wait": 400},
-            # rom/load covers CHIP-8-style emulators whose built-in test ROM
-            # must be loaded before the canvas animates (8/8 overnight chip8
-            # cells failed "canvas animates" without this)
-            {"type": "click", "match": r"start|play|new game|begin|serve|rom|load", "wait": 700},
-            {"type": "key", "key": "ArrowUp", "wait": 250},
-            {"type": "key", "key": "w", "wait": 250},
-        ],
-        "checks": [{"id": "game board present", "sel": "canvas", "minCount": 1},
-                   {"id": "game animates", "canvasAnimates": True, "domAnimates": True}],
-        "budget": 9000,
-    },
-    # CHIP-8 is probed on its REQUIRED self-test panel rather than canvas
-    # animation: emulators ship a static test ROM, so a working one never
-    # animates until a game is loaded — 8/8 working overnight cells scored
-    # 50% on the animation check alone
-    "chip8": {
-        "actions": [
-            {"type": "click", "match": r"self.?test", "wait": 1200},
-            {"type": "click", "match": r"rom|load|start|play|run", "wait": 900},
-            {"type": "key", "key": "Enter", "wait": 250},
-            {"type": "key", "key": "1", "wait": 250},
-        ],
-        "checks": [
-            {"id": "canvas present", "sel": "canvas", "minCount": 1},
-            # [\s\S] instead of (?s): JS RegExp rejects Python inline flags
-            {"id": "self-test renders results",
-             "bodyRegex": r"(pass|fail)[\s\S]*(pass|fail)[\s\S]*(pass|fail)"},
-        ],
-        "budget": 7000,
-    },
-    "todo": {
-        "actions": [
-            {"type": "type", "find": "input", "match": r"add|item|task|todo|what|new",
-             "value": "ZZ probe item", "wait": 250},
-            {"type": "click", "match": r"^add|add\b|submit|new", "wait": 700},
-        ],
-        "checks": [{"id": "item added", "sel": "li", "text": "ZZ probe item"}],
-    },
-    "spreadsheet": {
-        "actions": [
-            {"type": "type", "find": "editable", "value": "=SUM(3,4)", "wait": 300},
-            {"type": "key", "key": "Enter", "wait": 800},
-        ],
-        "checks": [{"id": "formula evaluates", "bodyRegex": r"(^|\s)7(\s|$|\n)"}],
-    },
-}
-
-_PROBE_TEMPLATE = """<script id="__qa_probe">
-(function () {
-  var CFG = __CFG__;
-  var out = { jsErr: null };
-  window.onerror = function (m) { out.jsErr = String(m).slice(0, 90); return false; };
-  var $$ = function (s) { return [].slice.call(document.querySelectorAll(s)); };
-  function fire(el, ev) { try { el.dispatchEvent(new Event(ev, { bubbles: true })); } catch (e) {} }
-  function findByText(re) {
-    return $$('button, a, [role=button]').find(function (x) {
-      return re.test((x.textContent || '').trim()); });
-  }
-  var _qaBaseLen = (document.body.innerText || '').length;
-  function snapCanvas() {
-    try { var c = $$('canvas')[0]; return c ? c.toDataURL() : null; } catch (e) { return null; }
-  }
-  var _qaM1 = null, _qaT1 = null, _qaDone = false;
-  function doActions(i) {
-    if (i >= CFG.actions.length) { setTimeout(measure, 300); return; }
-    var a = CFG.actions[i];
-    try {
-      if (a.type === 'type') {
-        var el = null;
-        if (a.find === 'textarea') el = $$('textarea')[0];
-        else if (a.find === 'input') el = $$('input').find(function (x) {
-          return new RegExp(a.match, 'i').test((x.placeholder || '') + ' ' + (x.id || '') + ' '
-            + (x.name || '') + ' ' + (x.getAttribute('aria-label') || '')); });
-        else if (a.find === 'editable') el = $$('[contenteditable=true], td[contenteditable]')[0];
-        if (el) {
-          out.typed = true;
-          if (el.isContentEditable) el.innerHTML = a.value; else el.value = a.value;
-          fire(el, 'input'); fire(el, 'change');
-        } else out.noTarget = a.find + ':' + (a.match || '');
-      } else if (a.type === 'click') {
-        var b = findByText(new RegExp(a.match, 'i'));
-        if (b) { b.click(); out.clicked = (b.textContent || '').trim().slice(0, 24); }
-        else out.noButton = a.match;
-      } else if (a.type === 'canvasClick') {
-        var cv = $$('canvas')[0];
-        if (cv) {
-          cv.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-          out.canvasClicked = true;
-        }
-      } else if (a.type === 'key') {
-        var t = $$('textarea, input, [contenteditable=true]')[0];
-        var ks = a.key === ' ' ? 'Space' : a.key;
-        try {
-          document.body.dispatchEvent(new KeyboardEvent('keydown', { key: a.key, code: ks, bubbles: true }));
-          if (t) t.dispatchEvent(new KeyboardEvent('keydown', { key: a.key, code: ks, bubbles: true }));
-        } catch (e) {}
-      }
-    } catch (e) { out.actErr = String(e).slice(0, 60); }
-    setTimeout(function () { doActions(i + 1); }, a.wait || 250);
-  }
-  function finish() {
-    try {
-      var res = {};
-      (CFG.checks || []).forEach(function (ck) {
-        if (ck.minOptions != null) {
-          var sel = $$('select')[0];
-          res[ck.id] = !!sel && sel.options.length >= ck.minOptions;
-        } else if (ck.minCount != null) {
-          res[ck.id] = $$(ck.sel).filter(function (x) {
-            return !ck.text || new RegExp(ck.text, 'i').test(x.textContent || ''); }).length >= ck.minCount;
-        } else if (ck.optionMatch) {
-          var want = (CFG.servedModels || []);
-          res[ck.id] = want.length > 0 && $$(ck.sel || 'select').some(function (sel) {
-            return [].slice.call(sel.options || []).some(function (o) {
-              var t = ((o.value || '') + ' ' + (o.textContent || '')).toLowerCase();
-              return want.some(function (w) {
-                return t.indexOf(w) >= 0 || (t.trim() && w.indexOf(t.trim()) >= 0);
-              });
-            });
-          });
-        } else if (ck.noMatch) {
-          res[ck.id] = !new RegExp(ck.bodyRegex, 'i').test(document.body.innerText || '');
-        } else if (ck.bodyRegex) {
-          res[ck.id] = new RegExp(ck.bodyRegex, 'i').test(document.body.innerText || '');
-        } else if (ck.domGrows != null) {
-          res[ck.id] = (document.body.innerText || '').length - _qaBaseLen >= ck.domGrows;
-        } else if (ck.canvasAnimates || ck.domAnimates) {
-          // liveness: two post-start samples — canvas pixels OR visible text
-          // changed between them means the game is running
-          if (_qaM1 === null) {
-            _qaM1 = snapCanvas();
-            _qaT1 = document.body.innerText;
-            res[ck.id] = false;
-          } else {
-            res[ck.id] = (_qaM1 !== snapCanvas()) || (document.body.innerText !== _qaT1);
-          }
-        } else if (ck.sel) {
-          res[ck.id] = !!$$(ck.sel).find(function (x) {
-            return !ck.text || new RegExp(ck.text, 'i').test(x.textContent || ''); });
-        } else res[ck.id] = false;
-      });
-      out.checks = res;
-    } catch (e) { out.mErr = String(e).slice(0, 60); }
-    document.title = 'QAPROBE ' + JSON.stringify(out);
-  }
-  function measure() {
-    // first pass: compute checks (finish records canvas sample #1), then
-    // re-run finish after a gap so the animation check can compare samples.
-    // (The reschedule must happen AFTER finish — sample #1 is recorded there.
-    // Checking it before was the bug that made canvas animates never pass.)
-    finish();
-    if (!_qaDone) {
-      _qaDone = true;
-      var anim = (CFG.checks || []).some(function (c) { return c.canvasAnimates; });
-      if (anim) { setTimeout(finish, 900); return; }
-    }
-    // async artifacts (IndexedDB): gate the report on a same-origin hold
-    // request — virtual time pauses for in-flight network, giving the
-    // database callbacks real time to complete before the DOM is graded
-    if (CFG.holdUrl) {
-      try { fetch(CFG.holdUrl).then(finish).catch(finish); return; } catch (e) {}
-    }
-  }
-  setTimeout(function () { doActions(0); }, 300);
-})();
-</script>"""
-
-
-def run_qa_probe(path, task_id, base_url=None):
-    """Headless-Chrome functional probe. Returns {ran, rate, passed, total,
-    fails[], jsErr} — {ran: False, why} when the probe couldn't run."""
-    chrome = find_chrome()
-    cfg = QA_PROBES.get(task_id)
-    if not CONFIG.get("qa_probe", True):
-        return {"ran": False, "why": "disabled in config"}
-    if not chrome:
-        return {"ran": False, "why": "no Chrome-like browser found"}
-    if not cfg:
-        return {"ran": False, "why": "no probe for this task"}
-    if cfg == "canvas":
-        cfg = json.loads(json.dumps(QA_PROBES["canvas"]))
-    else:
-        cfg = json.loads(json.dumps(cfg))  # deep copy — per-call @BASE_URL@
-    for a in cfg.get("actions", []):
-        if isinstance(a.get("value"), str) and "@BASE_URL@" in a["value"]:
-            if not base_url:
-                return {"ran": False, "why": "no endpoint URL for probe"}
-            a["value"] = a["value"].replace("@BASE_URL@", base_url)
-
-    # fetch the endpoint's REAL model list server-side (no CORS involved) so
-    # the probe can require the artifact's dropdown to contain an actual
-    # served model id instead of guessing an option count
-    served = []
-    if base_url:
-        try:
-            with urllib.request.urlopen(base_url.rstrip("/") + "/models", timeout=5) as r:
-                served = [str(m.get("id", "")) for m in
-                          json.loads(r.read()).get("data", [])][:10]
-        except Exception:
-            served = []
-    if served:
-        cfg["servedModels"] = sorted({s.split("/")[-1].lower() for s in served if s})
-    if cfg.get("async"):
-        # IndexedDB-style artifacts: the self-test is asynchronous REAL-TIME
-        # I/O that virtual time does not wait for. Serve the injected copy
-        # over HTTP from this backend and gate the report on a hold request
-        # so the database callbacks complete before grading.
-        cfg["holdUrl"] = f"http://127.0.0.1:{CONFIG.get('port', 7090)}/api/hold?ms=4500"
-
-    try:
-        with open(path, encoding="utf-8", errors="replace") as f:
-            src = f.read()
-    except OSError as e:
-        return {"ran": False, "why": str(e)[:80]}
-    js = _PROBE_TEMPLATE.replace("__CFG__",
-                                 json.dumps(cfg).replace("</", "<\\/"))
-    # headless Chrome never fires requestAnimationFrame (no display link),
-    # so rAF-driven games would read as frozen. Shimmed to a 16ms timer,
-    # which virtual time fast-forwards — canvas pixels then actually change.
-    # It must run BEFORE the page's own scripts, so it goes first in <head>.
-    # Opt-in per probe config: the shim breaks some artifacts (CHIP-8's
-    # batched self-test renders nothing under it), and only probes with an
-    # animation check need it.
-    shim = ""
-    if any(c.get("canvasAnimates") for c in cfg.get("checks", [])):
-        shim = ("<script>window.requestAnimationFrame = function (cb) "
-                "{ return setTimeout(function () { cb(performance.now()); }, 16); };"
-                "window.cancelAnimationFrame = function (id) { clearTimeout(id); };</script>")
-    # lambda replacement: a plain string replacement would let re.sub
-    # interpret the JSON's \n / \\ sequences as escapes and corrupt the script
-    if re.search(r"<head[^>]*>", src, re.I):
-        html = re.sub(r"<head[^>]*>", lambda m: m.group(0) + shim, src, count=1, flags=re.I)
-        if re.search(r"</body>", html, re.I):
-            html = re.sub(r"</body>", lambda m: js + "</body>", html, count=1, flags=re.I)
-        elif re.search(r"</html>", html, re.I):
-            html = re.sub(r"</html>", lambda m: js + "</html>", html, count=1, flags=re.I)
-        else:
-            html += js
-    elif re.search(r"</body>", src, re.I):
-        html = re.sub(r"</body>", lambda m: shim + js + "</body>", src, count=1, flags=re.I)
-    elif re.search(r"</html>", src, re.I):
-        html = re.sub(r"</html>", lambda m: shim + js + "</html>", src, count=1, flags=re.I)
-    else:
-        html = shim + js + src
-    tmpdir = tempfile.mkdtemp(prefix="qa_probe_")
-    probe_tmp = None
-    try:
-        tmp = os.path.join(tmpdir, "probe.html")
-        with open(tmp, "w") as f:
-            f.write(html)
-        target = "file://" + tmp
-        if cfg.get("async") and cfg.get("holdUrl"):
-            # serve the injected copy from this backend so the page is on an
-            # http origin (reliable IndexedDB) alongside the hold endpoint
-            probe_tmp = os.path.join(OUTPUT_DIR, "_probe_tmp.html")
-            shutil.copyfile(tmp, probe_tmp)
-            target = f"http://127.0.0.1:{CONFIG.get('port', 7090)}/output/_probe_tmp.html"
-        cmd = [chrome, "--headless=new", "--disable-gpu", "--no-first-run",
-               "--disable-extensions", "--disable-web-security",
-               "--allow-file-access-from-files", "--allow-running-insecure-content",
-               f"--virtual-time-budget={cfg.get('budget', 8000)}",
-               "--dump-dom", target]
-        # a throwaway profile isolates the probe — but a full Chrome build
-        # hangs when --user-data-dir is passed on this Mac, so only dedicated
-        # headless/testing shells get one
-        if "chrome-headless-shell" in chrome or "for Testing" in chrome \
-                or "chromium" in os.path.basename(chrome).lower():
-            cmd.insert(-2, f"--user-data-dir={os.path.join(tmpdir, 'profile')}")
-        try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
-        except subprocess.TimeoutExpired:
-            return {"ran": False, "why": "chrome timed out"}
-        m = re.search(r"<title>QAPROBE (.*?)</title>", r.stdout, re.S)
-        if not m:
-            return {"ran": False, "why": "probe did not report"}
-        try:
-            out = json.loads(m.group(1))
-        except json.JSONDecodeError:
-            return {"ran": False, "why": "probe report unparsable"}
-    finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
-        if probe_tmp:
-            try:
-                os.remove(probe_tmp)
-            except OSError:
-                pass
-
-    checks = out.get("checks") or {}
-    total = len(checks)
-    if not total or not out.get("typed") and not out.get("clicked") \
-            and not any("canvas" in k for k in checks):
-        # nothing was interactable and nothing rendered — probe blindness
-        return {"ran": False, "why": "probe found no interaction targets"}
-    fails = [k for k, v in checks.items() if not v]
-    js_err = out.get("jsErr") or ""
-    # Virtual time fast-forwards every timer, which can push a heavy page
-    # (e.g. a compiler that re-renders all its spec tests per keystroke) into
-    # a runaway the real browser never hits. Those page crashes under the
-    # probe are probe instability, not evidence about the artifact.
-    if js_err and any(p in js_err.lower() for p in
-                      ("invalid string length", "maximum call stack", "out of memory")):
-        return {"ran": False, "why": f"probe unstable under virtual time ({js_err[:60]})"}
-    return {"ran": True,
-            "rate": round(100 * (total - len(fails)) / total),
-            "passed": total - len(fails), "total": total, "fails": fails,
-            "jsErr": js_err or None, "clicked": out.get("clicked")}
 
 
 RAWPLUS_MAX_ROUNDS = 4  # 4 x per-chunk cap; context 261k holds prompt+output
@@ -1160,7 +613,7 @@ def _build_logreport_fixture():
         f, d = prev_file
         rows = [{"framework": r.get("framework"), "harness": r.get("harness"),
                  "status": r.get("status"), "latency": r.get("latency"),
-                 "qa_func": r.get("qa_func"), "error": (r.get("error") or "")[:200]}
+                 "error": (r.get("error") or "")[:200]}
                 for r in (d.get("results") or [])]
         with open(os.path.join(LOGREPORT_DIR, "runs.json"), "w") as fh:
             json.dump({"run_file": os.path.basename(f),
@@ -1244,7 +697,7 @@ HART_PATH = os.path.expanduser(
 # Routing for agent harnesses (pi/opencode/goose). True = via the local
 # measurement proxy, which adds per-request PP/TGS/TTFT to their rows.
 # False = straight to the framework, byte-identical to an independent harness
-# run (agent rows then report TPS/QA only — raw keeps full metrics either way).
+# run (agent rows then report TPS only — raw keeps full metrics either way).
 ROUTE_VIA_PROXY = bool(CONFIG.get("route_via_proxy", False))
 
 # pi thinking-level suffix for --model (pi supports :off…:xhigh). Empty =
@@ -2447,25 +1900,6 @@ def newest_html(workdir, since):
 NODE_BIN = shutil.which("node")
 
 
-def js_syntax_ok(js_source):
-    """Run `node --check` on the page's inline JS. Returns (ok, error)."""
-    if not NODE_BIN or not js_source.strip():
-        return None, None  # node unavailable / no JS to check
-    with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as f:
-        f.write(js_source)
-        path = f.name
-    try:
-        p = subprocess.run([NODE_BIN, "--check", path], capture_output=True, text=True, timeout=30)
-        if p.returncode == 0:
-            return True, None
-        err = (p.stderr or "").strip().splitlines()
-        return False, err[0][:200] if err else "syntax error"
-    except (OSError, subprocess.TimeoutExpired):
-        return None, None
-    finally:
-        os.unlink(path)
-
-
 _JS_TOKEN = re.compile(
     r"/\*.*?\*/"                    # block comment
     r"|//[^\n]*"                    # line comment
@@ -2473,134 +1907,6 @@ _JS_TOKEN = re.compile(
     r'|(?:"(?:\\.|[^"\\\n])*")'     # double-quoted string
     r"|`(?:\\.|[^`\\])*`",          # template literal
     re.S)
-
-
-def _js_code_skeleton(js):
-    """JS with comments and string/template literals blanked, so brace/paren
-    counting reflects CODE structure rather than text inside strings — a
-    markdown compiler's spec tests (or any app with braces in its strings)
-    would otherwise score as unbalanced. Leftmost-alternative matching makes
-    ordering self-correcting: a quote inside a comment is comment text, a //
-    inside a string is string text. Best-effort; syntax truth still comes
-    from node --check."""
-    return _JS_TOKEN.sub(" ", js)
-
-
-def qa_artifact(path, requirements=None, probe_ctx=None):
-    """Quality gate for a generated artifact. Returns reliable, reproducible
-    grades based on what CAN be verified automatically:
-
-      functionality — score from declared-requirements presence (all required
-          features found in the code = 100, each missing one deducts) plus a
-          structural completeness check (HTML valid, JS syntax clean, non-
-          trivial size). These are deterministic and never false-fail.
-      quality — code hygiene (decomposition, no eval/document.write, modern
-          declarations). Reported separately, never blended into functionality.
-
-      usable — release gate: functionality >= 90.
-
-    Runtime probe results (headless Chrome interacting with the artifact) are
-    reported in the notes as DIAGNOSTIC information only — they do not affect
-    the score. The probe can verify that a page loads, renders, and its core
-    interactions work, but the results depend on headless-browser timing,
-    virtual-time shims, and game-specific behavior — too unreliable to gate
-    scores on. Review them manually for cells you care about.
-
-    This design is a deliberate trade-off: the gate catches structural
-    failures (missing features, syntax errors, truncated builds) reliably,
-    and flags runtime concerns for human review — but does not attempt to
-    verify interactive gameplay or visual quality automatically."""
-    try:
-        with open(path, encoding="utf-8", errors="replace") as f:
-            src = f.read()
-    except OSError:
-        return None
-
-    req_missing, req_rate = [], None
-    if requirements:
-        req_missing = [label for label, pat in requirements
-                       if not re.search(pat, src, re.I)]
-        req_rate = round(100 * (len(requirements) - len(req_missing))
-                         / len(requirements), 1)
-
-    scripts = re.findall(r"<script\b[^>]*>(.*?)</script>", src, re.S | re.I)
-    js = "\n;\n".join(scripts)
-    has_inline_handlers = bool(re.search(r"\son[a-z]+\s*=\s*[\"']", src, re.I))
-
-    skeleton = _js_code_skeleton(js)
-    syn_ok, syn_err = js_syntax_ok(js)
-
-    notes = []
-    functionality = 0
-
-    # ---- structural checks (reliable, deterministic) ----
-    structural_checks = [
-        ("doctype", bool(re.search(r"<!DOCTYPE html", src, re.I)), 5),
-        ("closed document", "</html>" in src.lower(), 5),
-        ("non-trivial size", len(src) > 500, 5),
-    ]
-    structural_ok = all(ok for _, ok, _ in structural_checks)
-    structural_pct = round(100 * sum(w for _, ok, w in structural_checks if ok)
-                           / sum(w for _, _, w in structural_checks))
-
-    # ---- JS syntax (hard gate: syntax error = cannot work) ----
-    if syn_ok is False:
-        functionality = 0
-        notes.append(f"JS syntax error: {syn_err}")
-    elif syn_ok is True:
-        notes.append("JS syntax OK")
-
-    # ---- code hygiene (independent grade, reported but never blended) ----
-    funcs = len(re.findall(r"\bfunction\b|=>", skeleton))
-    qchecks = [
-        ("decomposed", funcs >= 3, 40),
-        ("no eval/doc.write", not re.search(r"\beval\s*\(|document\.write", js), 30),
-        ("modern decls", bool(re.search(r"\b(const|let)\b", js)), 30),
-    ]
-    qual = round(100 * sum(w for _, ok, w in qchecks if ok) / sum(w for _, _, w in qchecks))
-
-    # ---- functionality: requirements + structural, no probe influence ----
-    if requirements:
-        base = round(100 * req_rate / 100)  # req_rate is 0-100
-        struct_deduction = 0 if structural_ok else 10
-        functionality = max(0, base - struct_deduction)
-        if req_missing:
-            notes.append("missing: " + ", ".join(req_missing))
-        else:
-            notes.append("all required features present")
-        if not structural_ok:
-            missing_struct = [name for name, ok, _ in structural_checks if not ok]
-            notes.append("structural gaps: " + ", ".join(missing_struct))
-    else:
-        # no requirements defined — structural completeness is the score
-        functionality = structural_pct
-        if not structural_ok:
-            notes.append("structural gaps: "
-                         + ", ".join(name for name, ok, _ in structural_checks if not ok))
-
-    # ---- runtime probe: DIAGNOSTIC ONLY, never affects the score ----
-    if probe_ctx and not probe_ctx.get("static_report"):
-        try:
-            probe = run_qa_probe(path, probe_ctx.get("task"),
-                                 base_url=probe_ctx.get("base_url"))
-            if probe and probe.get("ran"):
-                if probe.get("fails"):
-                    notes.append(f"runtime probe {probe['passed']}/{probe['total']} failed: "
-                                 + ", ".join(probe["fails"]))
-                else:
-                    notes.append(f"runtime probe {probe['passed']}/{probe['total']} passed")
-                if probe.get("jsErr"):
-                    notes.append(f"probe saw JS error: {probe['jsErr']}")
-            elif probe.get("why"):
-                notes.append(f"runtime probe: {probe['why']}")
-        except Exception as e:
-            notes.append(f"runtime probe error: {e}")
-
-    # ---- assemble ----
-    notes = [n for n in notes if n]
-    return {"qa_func": functionality, "qa_qual": qual, "qa_notes": "; ".join(notes[:6]),
-            "usable": functionality >= 90,
-            "req_missing": req_missing, "req_rate": req_rate}
 
 
 def _arg_summary(args, cap=70):
@@ -3413,23 +2719,6 @@ def run_harness(fw, harness, task_name, prompt, settings, task=None):
         f.write(content)
     result["output_url"] = f"/output/{fname}"
 
-    reqs = REQUIREMENTS.get(task.get("id") if task else None)
-    if fname.endswith(".html") or reqs:
-        # runtime probe context: the task's probe config + the live endpoint
-        # (the framework server is still up at QA time, so the agentconsole
-        # probe can exercise a real connect + chat round-trip)
-        probe_ctx = None
-        if reqs:
-            probe_ctx = {"task": task.get("id"), "base_url": agent_base_url(fw)}
-        qa = qa_artifact(os.path.join(OUTPUT_DIR, fname),
-                         requirements=reqs, probe_ctx=probe_ctx)
-        if qa:
-            result.update(qa)
-            log(f"QA: functionality {qa['qa_func']}%, quality {qa['qa_qual']}"
-                + ("" if qa["usable"] else " — ⚠ BELOW 90% USABILITY THRESHOLD"),
-                fw=FRAMEWORKS[fw]["name"], harness=HARNESS_LABELS.get(harness, harness),
-                level="ok" if qa["usable"] else "err")
-
     result["_text"] = text[:5000]  # kept internally, not sent wholesale to UI
     return result
 
@@ -3788,6 +3077,14 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *a):  # quiet
         pass
 
+    def _html(self, body, code=200):
+        b = body.encode()
+        self.send_response(code)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(b)))
+        self.end_headers()
+        self.wfile.write(b)
+
     def _json(self, obj, code=200):
         body = json.dumps(obj).encode()
         self.send_response(code)
@@ -4011,6 +3308,19 @@ class Handler(BaseHTTPRequestHandler):
                 data = {"port": PROXY_PORT, **PROXY_STATE,
                         "totals": dict(PROXY_TOTALS), "log": list(PROXY_LOG)}
             self._json(data)
+        elif self.path == "/output" or self.path == "/output/":
+            # artifact folder index — the dashboard links here so users can
+            # browse every generated artifact from all runs
+            names = sorted(os.listdir(OUTPUT_DIR), reverse=True)
+            rows = "".join(
+                f'<tr><td><a href="/output/{n}">{n}</a></td>'
+                f'<td>{round(os.path.getsize(os.path.join(OUTPUT_DIR, n)) / 1024, 1)} KB</td>'
+                f'<td>{time.strftime("%m-%d %H:%M", time.localtime(os.path.getmtime(os.path.join(OUTPUT_DIR, n))))}</td></tr>'
+                for n in names if not n.startswith("_"))
+            body = (f"<h2>Artifacts ({len(names)})</h2>"
+                    "<table border=0 cellpadding=6><tr><th>File</th><th>Size</th><th>Modified</th></tr>"
+                    f"{rows}</table>")
+            self._html(body)
         elif self.path.startswith("/output/"):
             name = os.path.basename(self.path.split("?")[0])
             fp = os.path.join(OUTPUT_DIR, name)
@@ -4126,30 +3436,6 @@ class Handler(BaseHTTPRequestHandler):
             fname = TASK_FIXTURES[task][0]
             with open(os.path.join(ROOT, "fixtures", fname), encoding="utf-8") as fh:
                 self._json({"task": task, "file": fname, "source": fh.read()})
-        elif self.path == "/api/qa_probe":
-            # on-demand runtime-probe of a saved artifact (MCP/agent tooling)
-            artifact = str((req or {}).get("artifact") or "")
-            task = str((req or {}).get("task") or "")
-            base_url = (req or {}).get("base_url")
-            root = os.path.realpath(ROOT)
-            path = os.path.realpath(os.path.join(ROOT, artifact.lstrip("/")))
-            if not path.startswith(root + os.sep) or not os.path.isfile(path):
-                raise ValueError(f"artifact not found: {artifact}")
-            if task not in QA_PROBES:
-                raise ValueError(f"no probe for task {task!r}")
-            self._json(run_qa_probe(path, task, base_url=base_url))
-        elif self.path == "/api/rescore":
-            fname = str((req or {}).get("file") or "")
-            root = os.path.realpath(ROOT)
-            path = os.path.realpath(os.path.join(ROOT, fname.lstrip("/")))
-            if not path.startswith(root + os.sep) or not os.path.isfile(path):
-                raise ValueError(f"run file not found: {fname}")
-            import rescore as _rescore
-            import io, contextlib
-            buf = io.StringIO()
-            with contextlib.redirect_stdout(buf):
-                _rescore.rescore_file(path)
-            self._json({"ok": True, "log": buf.getvalue()[-2000:]})
         elif self.path == "/api/models/select":
             fw = req.get("fw") if isinstance(req, dict) else None
             model = req.get("model") if isinstance(req, dict) else None

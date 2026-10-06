@@ -3,8 +3,6 @@
   "port": 7090,
   "route_via_proxy": false,
   "pi_thinking": "",
-  "qa_probe": true,
-  "qa_chrome_path": "",
   "reasoning": {
     "short": "low",
     "long": "low"

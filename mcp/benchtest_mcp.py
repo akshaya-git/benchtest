@@ -38,7 +38,7 @@ mcp = MCPServer(
         "Tools for operating the benchtest local-LLM benchmark: live state, "
         "run history, run comparison, log tails, artifact re-probing, "
         "rescoring and campaign control. Read tools are always safe; the "
-        "control tools (start_campaign, stop_run, rescore_run) mutate the "
+        "control tools (start_campaign, stop_run) mutate the "
         "benchmark and say so in their descriptions."
     ),
 )
@@ -180,25 +180,8 @@ def framework_log(framework: str, lines: int = 60, only_errors: bool = True) -> 
     return "".join(buf) or "(no error-class lines in the window)"
 
 
-@mcp.tool()
-def qa_probe(artifact: str, task: str, base_url: str = "") -> str:
-    """Run the headless-Chrome QA probe against a saved artifact
-    (e.g. 'outputs/abc123.html', task one of the benchmark task ids). This
-    exercises the page like a user would and reports which behaviors pass or
-    fail — use it to verify whether a QA score is fair or to debug an
-    artifact. The bench backend must be running."""
-    return json.dumps(_post("/api/qa_probe",
-                            {"artifact": artifact, "task": task,
-                             "base_url": base_url or None}), indent=1)
 
 
-@mcp.tool()
-def rescore_run(run_file: str) -> str:
-    """MUTATES DATA: re-grades a saved run with the current QA gate
-    (including the runtime probe) without re-running any model. Use after
-    gate improvements; the original file is kept as .bak."""
-    return json.dumps(_post("/api/rescore", {"file": run_file},
-                            timeout=600), indent=1)
 
 
 @mcp.tool()

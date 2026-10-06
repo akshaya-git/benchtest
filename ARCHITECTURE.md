@@ -106,7 +106,7 @@ sequenceDiagram
             R->>S: OpenAI /chat/completions (raw / raw+)
             R->>R: or spawn pi/opencode/goose/hart (agents)
             R->>M: collect TPS/TGS/PP/latency/tokens
-            M->>M: QA the artifact (if HTML)
+            M->>M: save the artifact to outputs/ (extension preserved)
             R-->>O: result row
             O->>O: append to STATE.results (under LOCK)
         end
