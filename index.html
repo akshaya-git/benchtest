@@ -161,30 +161,18 @@
   <!-- ===== LEFT : CONFIG ===== -->
   <div style="flex: 1.15; min-width: 380px; display: flex; flex-direction: column;">
     <div class="panel">
-      <h2>Frameworks
-        <span style="float:right;font-weight:400;text-transform:none;letter-spacing:0">
-          <button class="mini" onclick="toggleGrid('#frameworkGrid', true)">All</button>
-          <button class="mini" onclick="toggleGrid('#frameworkGrid', false)">None</button>
-        </span></h2>
-      <div class="harness-grid" id="frameworkGrid"></div>
-    </div>
-
-    <div class="panel">
-      <h2>Model</h2>
+      <h2>Models</h2>
       <div id="machineLine" style="font-size:12px;font-weight:600;margin-bottom:8px">scanning…</div>
-      <div id="familyRadios" style="margin-bottom:10px"></div>
-      <div id="fwModelRows" style="font-size:12px"></div>
-      <details style="margin-top:8px">
-        <summary style="cursor:pointer;font-size:11px;color:var(--muted)">Models in another folder? Add a path to scan</summary>
-        <div style="display:flex;gap:6px;margin-top:6px">
-          <input id="extraPath" placeholder="/path/to/models" style="flex:1;padding:6px;font-size:12px">
-          <button class="mini" onclick="scanModels()">Scan</button>
-        </div>
-      </details>
+      <div style="font-size:11px;color:var(--muted);margin-bottom:8px;line-height:1.5">
+        Point each framework at a model folder, pick a model in its dropdown
+        (selecting a model = using that framework — leave
+        <i>— off —</i> to skip it), press <b>Validate</b> to confirm it loads,
+        then run.</div>
+      <div id="fwModelRows"></div>
       <div id="modelSetInfo" style="margin-top:8px;font-size:11px;color:var(--muted);line-height:1.6"></div>
       <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center">
-        <button class="mini" id="campBtnAll" onclick="campaignStart()">▶ Run All tasks — current models</button>
-        <span style="font-size:10.5px;color:var(--muted)">uses the dropdown models above</span>
+        <button class="mini" id="campBtnAll" onclick="campaignStart()">▶ Run All tasks — selected models</button>
+        <span style="font-size:10.5px;color:var(--muted)">runs every task against the models selected above</span>
       </div>
       <div id="campaignBanner" style="margin-top:8px"></div>
     </div>
@@ -390,10 +378,9 @@ const CUSTOM_PROMPT_TEMPLATE = `# Custom task — replace everything in this box
 # - The model has a training cutoff and does not know this benchmark exists
 #   unless you describe it.
 # - Deliverables: files an agent writes into its working directory are kept
-#   and shown under Output. If the reply contains a complete
-#   <name>.html page it is rendered and quality-probed automatically.
-# - Custom prompts are not requirement-scored — the dashboard reports
-#   success/failure, speed, and (for HTML) the generic quality probe.
+#   and shown under Output — open them to judge the result.
+# - The dashboard reports success/failure and speed; the artifact is the
+#   review surface.
 
 # --- Write your prompt below this line ---
 `;
@@ -414,17 +401,7 @@ async function loadFrameworks() {
       <div class="fw-model" id="fwmodel-${fw}" title="${esc(f.model)}">${esc(f.model)}</div>
     </div>`).join('');
 
-  // selection grid (preserve prior check state across re-renders)
-  const grid = $('frameworkGrid');
-  const prior = [...grid.querySelectorAll('input:checked')].map(i => i.value);
-  grid.innerHTML = Object.entries(all).map(([fw, f]) => {
-    const checked = prior.length ? prior.includes(fw) : true;
-    return `<label class="harness-chip ${checked ? 'on' : ''}"><input type="checkbox" value="${fw}" ${checked ? 'checked' : ''}> ${esc(f.name)}</label>`;
-  }).join('');
-  grid.querySelectorAll('input').forEach(i =>
-    i.addEventListener('change', () => { i.closest('.harness-chip').classList.toggle('on', i.checked); saveSettings(); }));
-
-  // model-set checkbox sync + framework availability (active_set may be a
+  // model-set checkbox sync (campaign tab; active_set may be a
   // merged selection like "flash-next+flash-next-oq5e")
   const modelSet = (Object.values(all)[0] || {}).model_set || '';
   const activeSets = new Set(String(modelSet).split('+'));
@@ -432,25 +409,7 @@ async function loadFrameworks() {
     c.checked = activeSets.has(c.value);
     c.closest('.harness-chip').classList.toggle('on', c.checked);
   });
-  document.querySelectorAll('#frameworkGrid input').forEach(i => {
-    const f = all[i.value];
-    const off = f && f.model_available === false;
-    i.disabled = off;
-    if (off) i.checked = false;
-    i.closest('.harness-chip').classList.toggle('on', i.checked);
-    i.closest('.harness-chip').style.opacity = off ? 0.45 : '';
-  });
-  renderModelSetInfo(all, modelSet);
-}
-
-function renderModelSetInfo(all, modelSet) {
-  $('modelSetInfo').innerHTML = Object.entries(all).map(([fw, f]) => {
-    const name = f.name || (FRAMEWORKS[fw] && FRAMEWORKS[fw].name) || fw;
-    const off = f.model_available === false;
-    return `<div><b>${esc(name)}</b>: ${off
-      ? '<span style="color:var(--muted)">not used by this model set</span>'
-      : '✓ ' + esc(f.model)}</div>`;
-  }).join('');
+  renderSetInfoLine();
 }
 
 function toggleGrid(gridSel, on) {
@@ -668,16 +627,7 @@ function _fwPhrase(fws) {
 
 
 
-function syncFrameworkGrid() {
-  document.querySelectorAll('#frameworkGrid input').forEach(i => {
-    const f = FRAMEWORKS[i.value];
-    const off = f && f.model_available === false;
-    i.disabled = off;
-    if (off) i.checked = false;
-    i.closest('.harness-chip').classList.toggle('on', i.checked);
-    i.closest('.harness-chip').style.opacity = off ? 0.45 : '';
-  });
-}
+
 
 
 
@@ -937,128 +887,118 @@ async function poll() {
 
 
 
-/* ---- MODEL SELECTION: family radios bulk-fill per-framework dropdowns;
-   dropdowns are individually overridable and always show what will run ---- */
-let SCAN = { models: [], machine: {} };
-let SETS_INFO = {};
-let SELECTED_SET = null;
+/* ---- MODEL & FRAMEWORK PICKER: no checkboxes, no radios. One row per
+   framework: a folder input (the tool lists every model it finds in it), a
+   dropdown (selecting a model = using that framework; — off — skips it),
+   and a Validate button that checks servability + RAM fit before a run. ---- */
 
-async function scanModels() {
-  const extra = (document.getElementById('extraPath') || {}).value || '';
+function fwRowHtml(fw) {
+  const f = FRAMEWORKS[fw] || {};
+  return '<div class="fwPickRow" data-fw="' + esc(fw) + '" style="border:1px solid var(--line);border-radius:8px;padding:8px;margin-bottom:8px">' +
+    '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">' +
+    '<b style="width:92px;font-size:12px">' + esc(f.name || fw) + '</b>' +
+    '<input class="fwFolder" data-fw="' + esc(fw) + '" spellcheck="false" placeholder="/path/to/model/folder"' +
+    ' style="flex:1;padding:5px 8px;font-size:11px;font-family:monospace">' +
+    '<button class="mini" title="list the models in this folder" onclick="loadFolder(\'' + esc(fw) + '\')">↻ Load</button></div>' +
+    '<div style="display:flex;align-items:center;gap:8px">' +
+    '<span style="width:92px;font-size:11px;color:var(--muted)">Model</span>' +
+    '<select class="fwModelSel" data-fw="' + esc(fw) + '" style="flex:1;padding:6px;font-size:12px" onchange="applySelection()">' +
+    '<option value="">— off —</option></select>' +
+    '<button class="mini" onclick="validateModel(\'' + esc(fw) + '\')">Validate</button></div>' +
+    '<div class="fwVerdict" id="verdict-' + esc(fw) + '" style="font-size:11px;margin-top:5px;color:var(--muted)"></div></div>';
+}
+
+async function initModelPanel() {
+  document.getElementById('fwModelRows').innerHTML =
+    Object.keys(FRAMEWORKS).map(fwRowHtml).join('');
   try {
-    const d = await api('/api/models/scan' + (extra.trim() ? '?extra=' + encodeURIComponent(extra.trim()) : ''));
-    SCAN = d;
-    try {
-      const ci = await api('/api/campaign');
-      SETS_INFO = ci.sets || {};
-      const st = await api('/api/frameworks');
-      const active = (Object.values(st)[0] || {}).model_set;
-      SELECTED_SET = (active && SETS_INFO[active]) ? active : null;
-    } catch (e2) {}
-    const m = d.machine || {};
+    const m = await api('/api/machine');
     document.getElementById('machineLine').textContent =
       (m.chip || 'Mac') + ' \u00b7 ' + m.total_gb + ' GB RAM \u00b7 ~' + m.usable_gb + ' GB usable';
-  } catch (e) { SCAN = { models: [], machine: {} }; }
-  renderFamilyRadios();
-  renderFwRows();
-  syncFrameworkGrid();
+    const defaults = { omlx: m.hf_cache, mlxlm: m.hf_cache,
+                       mlxserve: m.hf_cache, mtplx: m.mtplx_store };
+    Object.keys(FRAMEWORKS).forEach(fw => {
+      const inp = document.querySelector('.fwFolder[data-fw="' + fw + '"]');
+      if (inp && !inp.value && defaults[fw]) inp.value = defaults[fw];
+    });
+  } catch (e) {}
+  await Promise.all(Object.keys(FRAMEWORKS).map(fw => loadFolder(fw, true)));
   renderSetInfoLine();
 }
 
-
-
-
-
-
-
-
-function families() {
-  // the shipped model sets ARE the families: their defaults are what a radio
-  // selects (27B -> all frameworks, flash-next -> the frameworks it covers)
-  return SETS_INFO;
-}
-
-function renderFamilyRadios() {
-  const el = document.getElementById('familyRadios');
-  el.innerHTML = Object.entries(SETS_INFO).map(([name, p]) =>
-    '<label class="harness-chip' + (SELECTED_SET === name ? ' on' : '') + '" style="display:flex;align-items:center;gap:8px;margin-bottom:6px">' +
-    '<input type="radio" name="famRadio" value="' + esc(name) + '"' + (SELECTED_SET === name ? ' checked' : '') +
-    ' onchange="onFamilyPick(\'' + esc(name) + '\')">' +
-    '<span><b>' + esc(p.label || name) + '</b> <span style="color:var(--muted);font-size:10.5px">\u2014 ' +
-    esc((p.frameworks || []).length >= Object.keys(FRAMEWORKS).length ? 'all frameworks'
-        : (p.frameworks || []).map(fw => (FRAMEWORKS[fw] || {}).name || fw).join(' \u00b7 ') || 'no frameworks') +
-    '</span></span></label>').join('');
-}
-
-function renderFwRows() {
-  const el = document.getElementById('fwModelRows');
-  el.innerHTML = Object.keys(FRAMEWORKS).map(fw => {
-    const f = FRAMEWORKS[fw] || {};
-    const off = f.model_available === false;
-    // every model this framework can serve — end user picks the quant.
-    // (Store tags stay visible in the label: users can tell where it came from.)
-    const optList = SCAN.models
-      .filter(m => (m.frameworks || []).includes(fw));
-    // the current model stays listed even when the store filter hides it
-    if (f.model && !off && !optList.some(m => m.id === f.model)) {
-      optList.unshift({ id: f.model, machine_fit: null });
-    }
-    optList.sort((a, b) => (a.size_gb || 0) - (b.size_gb || 0));
-    const FF = SCAN.family_frameworks || {};
-    const opts = optList.map(m => {
-        // family compatibility: a family is only selectable in frameworks a
-        // shipped model set pairs it with (flash-next -> omlx + mtplx only —
-        // mlx-vlm/mlx-serve cannot load that architecture)
-        const allowed = !m.family || !FF[m.family] ||
-                        (FF[m.family] || []).includes(fw);
-        const dis = m.machine_fit === 'wont-fit' || !allowed ? ' disabled' : '';
-        const tag = m.machine_fit === 'fits' ? '  \u2713'
-                  : m.machine_fit === 'tight' ? '  \u25b3'
-                  : m.machine_fit === 'wont-fit' ? '  \u2717 won\u2019t fit'
-                  : !allowed ? '  \u2717 not on ' + ((FRAMEWORKS[fw] || {}).name || fw) : '';
-        const sel = (!off && m.id === f.model) ? ' selected' : '';
-        const storeTag = m.store === 'mtplx' ? ' \u00b7 mtplx-store' : '';
-        const sizeTag = m.size_gb ? ' (' + m.size_gb + ' GB' + (m.moe ? ' MoE' : '') + ')' : '';
-        return '<option value="' + esc(m.id) + '"' + sel + dis + '>' +
-               esc(m.id.split('/').pop()) + sizeTag + storeTag + tag + '</option>';
-      }).join('');
-    const noneSel = off ? ' selected' : '';
-    const noneOpt = '<option value=""' + noneSel + ' class="none-opt" style="color:var(--muted)">\u2014 off \u2014</option>';
-    return '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;' + (off ? 'opacity:.45' : '') + '">' +
-      '<span style="width:86px;font-size:11px;color:var(--muted)">' + esc((f && f.name) || fw) + '</span>' +
-      '<select data-fw="' + esc(fw) + '" class="fwModelSel" style="flex:1;padding:6px;font-size:12px"' +
-      (off ? ' disabled' : '') + ' onchange="applySelection()">' + noneOpt + opts + '</select></div>';
-  }).join('');
-}
-
-async function onFamilyPick(name) {
-  // apply the shipped set FIRST (defaults + availability), then re-render —
-  // rendering before the state lands is what reverted the radio click
-  const res = await api('/api/model_set', { set: name });
-  if (!res.ok) { alert(res.error || 'set failed'); return; }
-  for (const fw in res.frameworks) {
-    FRAMEWORKS[fw] = Object.assign({}, FRAMEWORKS[fw], res.frameworks[fw]);
+async function loadFolder(fw, quiet) {
+  const inp = document.querySelector('.fwFolder[data-fw="' + fw + '"]');
+  const sel = document.querySelector('.fwModelSel[data-fw="' + fw + '"]');
+  const v = document.getElementById('verdict-' + fw);
+  if (v) { v.textContent = ''; v.style.color = 'var(--muted)'; }
+  const folder = ((inp && inp.value) || '').trim();
+  if (!folder) { sel.innerHTML = '<option value="">— off —</option>'; return; }
+  let models = [];
+  try {
+    const d = await api('/api/models/folder?path=' + encodeURIComponent(folder));
+    models = d.models || [];
+    if (d.error) throw new Error(d.error);
+  } catch (e) {
+    sel.innerHTML = '<option value="">— off —</option>';
+    if (!quiet) alert('Folder scan failed: ' + (e.message || e));
+    return;
   }
-  SELECTED_SET = name;
-  renderFamilyRadios();
-  renderFwRows();
-  syncFrameworkGrid();
-  renderSetInfoLine();
+  models.sort((a, b) => (a.size_gb || 0) - (b.size_gb || 0));
+  const f = FRAMEWORKS[fw] || {};
+  const cur = f.model || '';
+  if (cur && f.model_available !== false && !models.some(m => m.id === cur))
+    models.unshift({ id: cur, size_gb: null });
+  sel.innerHTML = '<option value="">— off —</option>' + models.map(m =>
+    '<option value="' + esc(m.id) + '"' + (m.id === cur ? ' selected' : '') + '>' +
+    esc(m.id.split('/').pop()) +
+    (m.size_gb ? '  \u2014 ' + m.size_gb + ' GB' : '') + '</option>').join('');
+  sel.title = models.map(m => m.id + (m.size_gb ? ' (' + m.size_gb + ' GB)' : '')).join('\n');
+}
+
+async function validateModel(fw) {
+  const sel = document.querySelector('.fwModelSel[data-fw="' + fw + '"]');
+  const v = document.getElementById('verdict-' + fw);
+  if (!sel.value) {
+    v.textContent = 'Pick a model first \u2014 the dropdown lists what the folder above contains.';
+    v.style.color = 'var(--muted)';
+    return;
+  }
+  v.textContent = 'validating\u2026'; v.style.color = 'var(--muted)';
+  const d = await api('/api/model/validate', { fw: fw, model: sel.value });
+  if (d.error) {
+    v.textContent = '\u2717 ' + d.error;
+    v.style.color = 'var(--red)';
+    return;
+  }
+  v.textContent = d.message || '';
+  v.style.color = d.verdict === 'fits' ? 'var(--green)'
+                : d.verdict === 'tight' ? 'var(--amber)'
+                : d.verdict === 'unknown' ? 'var(--muted)' : 'var(--red)';
 }
 
 async function applySelection() {
   const models = {};
   document.querySelectorAll('.fwModelSel').forEach(s => { models[s.dataset.fw] = s.value || ''; });
   const res = await api('/api/model_set', { models: models });
-  if (!res.ok) { alert(res.error || 'combination rejected'); return; }
+  if (!res.ok) {
+    alert(res.error || 'combination rejected');
+    // revert the dropdowns to the last accepted state
+    document.querySelectorAll('.fwModelSel').forEach(s => {
+      const f = FRAMEWORKS[s.dataset.fw] || {};
+      s.value = (f.model_available === false || !f.model) ? '' : f.model;
+    });
+    return;
+  }
   for (const fw in res.frameworks) {
     FRAMEWORKS[fw] = Object.assign({}, FRAMEWORKS[fw], res.frameworks[fw]);
   }
-  SELECTED_SET = 'custom';
-  renderFamilyRadios();
-  renderFwRows();
-  syncFrameworkGrid();
   renderSetInfoLine();
+  resetCampaignArm();
+}
+
+function selectedFws() {
+  return [...document.querySelectorAll('.fwModelSel')]
+    .filter(s => s.value).map(s => s.dataset.fw);
 }
 
 function renderSetInfoLine() {
@@ -1079,25 +1019,41 @@ async function campaignStart() {
     setTimeout(() => location.reload(), 1200);
     return;
   }
-  const avail = Object.values(FRAMEWORKS).filter(f => f.model_available !== false);
-  if (!avail.length) { alert('Select a model family (or per-framework models) first.'); return; }
+  const nfw = selectedFws().length;
+  if (!nfw) { alert('Select a model in at least one framework dropdown first.'); return; }
   const info = await api('/api/campaign');
   const plan = info.sets['selected'];
   campaignArmed = true;
-  btn.textContent = '\u2713 Confirm \u2014 ' + (plan ? plan.runs : '?') + ' runs \u00b7 ' + avail.length + ' framework(s)';
+  btn.textContent = '\u2713 Confirm \u2014 ' + (plan ? plan.runs : '?') + ' runs \u00b7 ' + nfw + ' framework(s)';
   btn.style.color = 'var(--amber)';
-  setTimeout(() => { if (campaignArmed) { campaignArmed = null; btn.textContent = '\u25b6 Run All tasks \u2014 current models'; btn.style.color = ''; } }, 8000);
+  setTimeout(() => resetCampaignArm(), 8000);
+}
+
+function resetCampaignArm() {
+  const btn = document.getElementById('campBtnAll');
+  if (campaignArmed && btn) {
+    campaignArmed = null;
+    btn.textContent = '\u25b6 Run All tasks \u2014 selected models';
+    btn.style.color = '';
+  }
 }
 
 async function startRun() {
-  // apply the ticked model combination first — the run honors exactly what
-  // is ticked (one model per framework; overlaps are rejected server-side)
-  const avail = Object.values(FRAMEWORKS).filter(f => f.model_available !== false);
-  if (!avail.length) return alert('Select a model family or per-framework models first.');
+  // the dropdowns ARE the framework selection: apply the picked models, then
+  // run exactly those frameworks (one model per framework; overlaps are
+  // rejected server-side)
+  const picks = {};
+  document.querySelectorAll('.fwModelSel').forEach(s => { if (s.value) picks[s.dataset.fw] = s.value; });
+  const frameworks = Object.keys(picks);
+  if (!frameworks.length) return alert('Select a model in at least one framework dropdown.');
   const harnesses = [...document.querySelectorAll('#harnessGrid input:checked')].map(i => i.value);
   if (!harnesses.length) return alert('Select at least one harness.');
-  const frameworks = [...document.querySelectorAll('#frameworkGrid input:checked')].map(i => i.value);
-  if (!frameworks.length) return alert('Select at least one framework.');
+  const res = await api('/api/model_set', { models: picks });
+  if (!res.ok) return alert(res.error || 'model combination rejected');
+  for (const fw in res.frameworks) {
+    FRAMEWORKS[fw] = Object.assign({}, FRAMEWORKS[fw], res.frameworks[fw]);
+  }
+  renderSetInfoLine();
   api('/api/run', {
     frameworks,
     harnesses,
@@ -1299,7 +1255,6 @@ function saveSettings() {
       repeats: $('repeats').value,
       prompt: $('promptBox').value,
       harnesses: [...document.querySelectorAll('#harnessGrid input:checked')].map(i => i.value),
-      frameworks: [...document.querySelectorAll('#frameworkGrid input:checked')].map(i => i.value),
     }));
   } catch (e) { /* private mode etc. — non-fatal */ }
 }
@@ -1331,7 +1286,6 @@ function loadSettings() {
     });
   };
   applyChecks('#harnessGrid', s.harnesses);
-  applyChecks('#frameworkGrid', s.frameworks);
 }
 
 /* ---- init ---- */
@@ -1342,9 +1296,7 @@ $('promptBox').addEventListener('input', saveSettings);
   await loadTasks();
   await Promise.all([loadFrameworks(), loadHarnesses()]);
   loadSettings();
-  scanModels().then(() => {
-    const sel = (window.CONFIG_SELECTED = window.CONFIG_SELECTED || { model: null });
-  });
+  initModelPanel();
   setMetric('tps');
   poll();
   poller = setInterval(poll, 1200);

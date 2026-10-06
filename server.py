@@ -299,8 +299,18 @@ def _validate_fit(models_map):
     """Refuse combinations where a chosen model cannot fit this machine
     (machine_fit == wont-fit), naming the model and the numbers."""
     fitmap, machine = _fit_lookup()
+    usable = machine.get("usable_gb")
     for fw, model in models_map.items():
         cand = fitmap.get(discovery.normalize_key(model))
+        if not cand and model.startswith("/") and os.path.isdir(model):
+            size = discovery.dir_size_gb(model)
+            need = round(size * 1.1 + 2.0, 1) if size else None
+            if need and usable and need > usable:
+                raise ValueError(
+                    f"{FRAMEWORKS[fw]['name']}: {model} needs ~{need} GB but "
+                    f"this machine has ~{usable} GB usable — pick a smaller "
+                    f"model")
+            continue
         if not cand:
             continue
         mf = (cand.get("compat") or {}).get("machine_fit")
@@ -3303,6 +3313,109 @@ def run_benchmark(req):
 # ----------------------------------------------------------------------------
 # HTTP
 # ----------------------------------------------------------------------------
+def _scan_folder_models(folder):
+    """Models inside a user-named folder — the picker's per-framework source.
+    Understands the three layouts that exist in the wild: an HF-hub cache
+    (models--org--name entries with snapshots/), a store of cache-style dirs
+    (org--name, optionally with .mtplx-source.json carrying the repo id), and
+    plain converted model dirs (config.json inside). A folder that IS itself
+    a model yields that model."""
+    def _one(d, mid):
+        return {"id": mid, "path": d, "size_gb": discovery.dir_size_gb(d),
+                "context_length": discovery.file_context(
+                    os.path.join(d, "config.json"))}
+    out = []
+    root = os.path.realpath(os.path.expanduser(folder))
+    if not os.path.isdir(root):
+        return out
+    if os.path.isfile(os.path.join(root, "config.json")):
+        return [_one(root, os.path.basename(root))]
+    for entry in sorted(os.listdir(root)):
+        d = os.path.join(root, entry)
+        if not os.path.isdir(d):
+            continue
+        if entry.startswith("models--"):
+            mid = entry[len("models--"):].replace("--", "/")
+            # the weights live in the newest snapshot (file symlinks into
+            # blobs/); sizing the snapshot avoids double-counting blobs
+            snaps = sorted(glob.glob(os.path.join(d, "snapshots", "*")))
+            cfgp = os.path.join(snaps[-1], "config.json") if snaps else None
+            out.append({"id": mid, "path": snaps[-1] if snaps else d,
+                        "size_gb": discovery._snapshot_size_gb(d),
+                        "context_length": discovery.file_context(cfgp)
+                        if cfgp else None})
+        elif "--" in entry:
+            mid = entry.replace("--", "/")
+            srcf = os.path.join(d, ".mtplx-source.json")
+            if os.path.isfile(srcf):
+                try:
+                    with open(srcf) as f:
+                        mid = json.load(f).get("repo_id") or mid
+                except (OSError, json.JSONDecodeError):
+                    pass
+            out.append(_one(d, mid))
+        elif os.path.isfile(os.path.join(d, "config.json")):
+            out.append(_one(d, entry))
+    return [m for m in out if (m.get("size_gb") or 0) >= 1.0]   # draft heads etc.
+
+
+def _validate_model_pick(fw, model):
+    """The picker's Validate button: can THIS framework serve THIS model, and
+    does it fit this machine — the same rules the run applies, surfaced
+    before the run instead of as a 400 on Run click."""
+    cfg = FRAMEWORKS[fw]
+    machine = discovery.machine_profile()
+    is_path = model.startswith("/") or os.path.isdir(model)
+    fitmap, _machine = _fit_lookup()
+    cand = fitmap.get(discovery.normalize_key(model))
+    if cand is None and is_path and os.path.isdir(model):
+        cand = {"id": model, "custom_path": model, "in_cache": True,
+                "served": False,
+                "size_gb": discovery.dir_size_gb(model),
+                "context_length": discovery.file_context(
+                    os.path.join(model, "config.json"))}
+    healthy = framework_healthy(fw)
+    if cand is None:
+        return {"ok": True, "fw": fw, "model": model, "verdict": "unknown",
+                "servable": True, "healthy": healthy,
+                "message": f"{cfg['name']} has no local record of {model} — "
+                f"it would need to download on start (or the id is wrong). "
+                f"Start it to find out."}
+    fws = list(cand.get("frameworks") or [])
+    if cand.get("custom_path") and not fws:
+        fws = ["mlxlm", "mlxserve"]   # plain folder models: path-servable only
+    if fw not in fws:
+        where = ("the MTPLX store (a different runtime format)"
+                 if (cand.get("source") or "") == "mtplx"
+                 or cand.get("in_mtplx_store")
+                 else "another framework's registry")
+        return {"ok": True, "fw": fw, "model": model, "verdict": "no",
+                "servable": False, "healthy": healthy,
+                "message": f"✗ {cfg['name']} cannot serve {model} — it lives "
+                f"in {where}."}
+    free_gb = round(available_ram()[0] / 1073741824, 1)
+    compat = discovery.compatibility(cand, free_gb, cfg.get("ctx_tokens"),
+                                     machine)
+    mf = compat.get("machine_fit")
+    size = cand.get("size_gb")
+    need = cand.get("need_gb")
+    bits = ([f"{size} GB weights"] if size else []) \
+        + ([f"~{need} GB needed"] if need else []) \
+        + ([f"{machine.get('usable_gb')} GB usable"] if machine.get("usable_gb") else [])
+    if mf == "wont-fit":
+        verdict, msg = "wont-fit", "✗ Won't fit — " + ", ".join(bits) + "."
+    elif mf == "tight":
+        verdict, msg = "tight", "⚠ Tight — " + ", ".join(bits) + "; may swap under load."
+    else:
+        verdict, msg = "fits", "✓ Fits — " + ", ".join(bits) + "."
+    msg += (" Server is running." if healthy
+            else " Server not running — it will be started on Run.")
+    return {"ok": True, "fw": fw, "model": model, "verdict": verdict,
+            "servable": True, "machine_fit": mf, "size_gb": size,
+            "need_gb": need, "usable_gb": machine.get("usable_gb"),
+            "healthy": healthy, "message": msg}
+
+
 def _scan_models_payload(store_filter=None, extra=None):
     """Scan payload for the /api/models/scan route."""
     machine = discovery.machine_profile()
@@ -3581,7 +3694,19 @@ class Handler(BaseHTTPRequestHandler):
                                  "status": STATE["framework_status"].get(fw)}
                             for fw, c in FRAMEWORKS.items()})
         elif self.path == "/api/machine":
-            self._json(discovery.machine_profile())
+            self._json({**discovery.machine_profile(),
+                        "hf_cache": discovery.HF_CACHE,
+                        "mtplx_store": discovery.MTPLX_MODELS})
+        elif self.path.startswith("/api/models/folder"):
+            from urllib.parse import urlparse as _up, parse_qs as _pq
+            folder = (_pq(_up(self.path).query)
+                      .get("path") or [""])[0].strip()
+            if not folder:
+                raise ValueError("path required")
+            if not os.path.isdir(os.path.expanduser(folder)):
+                raise ValueError(f"folder not found: {folder}")
+            self._json({"path": folder,
+                        "models": _scan_folder_models(folder)})
 
         elif self.path.startswith("/api/models/scan"):
             # MODEL-FIRST discovery: every installed model across all stores
@@ -3654,6 +3779,14 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": True})
         elif self.path.startswith("/api/relay/"):
             self._relay()
+        elif self.path == "/api/model/validate":
+            fw = (req or {}).get("fw")
+            model = str((req or {}).get("model") or "").strip()
+            if fw not in FRAMEWORKS:
+                raise ValueError(f"unknown framework: {fw}")
+            if not model:
+                raise ValueError("model required")
+            self._json(_validate_model_pick(fw, model))
         elif self.path == "/api/campaign":
             action = (req or {}).get("action")
             camp = STATE.get("campaign") or {}
@@ -3752,8 +3885,9 @@ class Handler(BaseHTTPRequestHandler):
                     FRAMEWORKS[fw]["model_available"] = fw in models_map
                 for fw, model in models_map.items():
                     cfg = FRAMEWORKS[fw]
-                    if fw == "omlx":
+                    if fw == "omlx" and not model.startswith("/"):
                         model = model.replace("/", "--")   # OMLX cache-style id
+                    # a "/path" value is a local model dir — keep it verbatim
                     cfg["model"] = model
                     cfg["repo"] = model
                     cfg["model_available"] = True
