@@ -194,7 +194,7 @@
       <div class="settings-grid">
         <div><label>Temperature</label><input type="number" id="temp" value="0.7" step="0.1" min="0" max="2"></div>
         <div><label>Max tokens (agents)</label><input type="number" id="maxTok" value="65536" step="256" min="64"></div>
-        <div><label title="Raw is one-shot with no agent to budget context — give thinking models room to finish">Raw max tokens</label><input type="number" id="rawMaxTok" value="65536" step="1024" min="1024"></div>
+        <div><label title="Every cell (one framework × harness × task) is killed at this wall-clock cap; its partial artifact is kept and the cell is recorded as an error. Fixed at 2 h for now — configurability is parked (see PARKED.md)">Max cell run time</label><input type="text" value="7200 s (2 h)" disabled style="opacity:.75"></div>
         <div><label>Top P</label><input type="number" id="topP" value="0.95" step="0.05" min="0" max="1"></div>
         <div><label>Repeats</label><input type="number" id="repeats" value="1" min="1" max="5"></div>
       </div>
@@ -259,11 +259,11 @@
         <th title="Prompt processing — prefill tok/s (server-side where the framework provides it; client-side for raw)">PP tok/s</th>
         <th title="Token generation — decode tok/s (server-side where the framework provides it; client-side for raw)">TGS tok/s</th>
         <th title="Overall throughput — completion tokens / total wall time">TPS</th>
-        <th>Run time (s)</th><th>Iter</th><th>Tokens</th><th>Status</th><th>Artifacts</th>
+        <th>Run time (s)</th><th>Tokens</th><th>Status</th><th>Artifacts</th>
       </tr>
     </thead>
     <tbody id="resultsBody">
-      <tr><td colspan="12" style="color:var(--muted);text-align:center;padding:22px;">No results yet — pick harnesses &amp; a task and hit Run Benchmark.</td></tr>
+      <tr><td colspan="11" style="color:var(--muted);text-align:center;padding:22px;">No results yet — pick harnesses &amp; a task and hit Run Benchmark.</td></tr>
     </tbody>
   </table>
   </div>
@@ -710,7 +710,6 @@ function renderResults() {
       <td title="ctx fill ${r.ctx_fill_pct ?? '–'}% · ~${r.est_gbps ?? '–'} GB/s est${r.server_cached_tokens != null ? ' · ' + r.server_cached_tokens + ' cached tok' : ''}">${tgsv === null ? (r.status === 'done' ? '–' : '…') : tgsv}</td>
       <td style="color:var(--green);font-weight:700">${r.tps == null ? (r.status === 'done' ? '–' : '…') : r.tps.toFixed(1)}</td>
       <td>${r.latency == null ? '…' : r.latency.toFixed(2)}</td>
-      <td>${r.iterations == null ? '–' : r.iterations}</td>
       <td>${r.tokens == null ? '…' : r.tokens}</td>
       <td><a class="cell-link" onclick="showCellDetail(${i})" title="${r.error ? esc(r.error) : 'Click for detail'}"><span class="tag ${r.status}" title="${r.truncated ? 'Response hit the max_tokens cap and was cut off — output may be incomplete' : ''}">${r.status}${r.truncated ? ' ⚠' : ''}</span></a></td>
       <td>${r.output_url ? `<button class="mini" onclick="window.open('${r.output_url}','_blank')">Open ▸</button>` : (r.status === 'done' ? '<span style="color:var(--muted)">text</span>' : '')}</td>
@@ -1062,7 +1061,6 @@ async function startRun() {
     settings: {
       temperature: parseFloat($('temp').value),
       max_tokens: parseInt($('maxTok').value),
-      max_tokens_raw: parseInt($('rawMaxTok').value),
       top_p: parseFloat($('topP').value),
       repeats: parseInt($('repeats').value) || 1
     }
@@ -1165,7 +1163,6 @@ async function loadHistory() {
       return `<tr><td>${esc(x.framework)}</td><td>${esc(x.harness)}</td>
        <td><a class="cell-link" onclick="showRowDetail(_histRows[${idx}])" title="${esc(tip)}"><span class="tag ${x.status}" >${x.status}${x.truncated ? ' ⚠' : ''}</span></a></td>
        <td>${x.latency == null ? '–' : x.latency + 's'}</td>
-       <td>${x.iterations ?? '–'}</td>
        <td>${x.tokens ?? '–'}</td><td>${x.tps ?? '–'}</td>
        <td>${x.output_url ? `<a href="${x.output_url}" target="_blank" style="color:var(--accent)">open</a>` : '–'}</td></tr>`;
     }).join('');
@@ -1182,7 +1179,7 @@ async function loadHistory() {
         ${Object.entries(r.frameworks || {}).map(([f, m]) => `${f}: ${esc(m)}`).join(' · ')}
       </div>
       <div style="overflow-x:auto;margin-top:6px">
-      <table><thead><tr><th>Framework</th><th>Harness</th><th>Status</th><th>Run time</th><th>Iter</th>
+      <table><thead><tr><th>Framework</th><th>Harness</th><th>Status</th><th>Run time</th>
         <th>Tokens</th><th>TPS</th><th>Artifacts</th></tr></thead>
       <tbody>${rows}</tbody></table></div>
     </details>`;
@@ -1250,7 +1247,6 @@ function saveSettings() {
       task: $('taskSelect').value,
       temp: $('temp').value,
       maxTok: $('maxTok').value,
-      rawMaxTok: $('rawMaxTok').value,
       topP: $('topP').value,
       repeats: $('repeats').value,
       prompt: $('promptBox').value,
@@ -1267,14 +1263,11 @@ function loadSettings() {
     const t = TASKS.find(x => x.id === s.task);
     if (t && s.prompt == null) $('promptBox').value = t.prompt;
   }
-  for (const id of ['temp', 'maxTok', 'rawMaxTok', 'topP', 'repeats'])
+  for (const id of ['temp', 'maxTok', 'topP', 'repeats'])
     if (s[id] != null) $(id).value = s[id];
   // one-time migration: 32k caps predate the 64k uniform setting
   if (s.maxTok === '32768' || s.maxTok === 32768) {
     $('maxTok').value = '65536'; saveSettings();
-  }
-  if (s.rawMaxTok === '32768' || s.rawMaxTok === 32768) {
-    $('rawMaxTok').value = '65536'; saveSettings();
   }
   if (s.prompt != null) $('promptBox').value = s.prompt;
   const applyChecks = (sel, list) => {
@@ -1289,7 +1282,7 @@ function loadSettings() {
 }
 
 /* ---- init ---- */
-['temp', 'maxTok', 'rawMaxTok', 'topP', 'repeats'].forEach(id => $(id).addEventListener('change', saveSettings));
+['temp', 'maxTok', 'topP', 'repeats'].forEach(id => $(id).addEventListener('change', saveSettings));
 $('promptBox').addEventListener('input', saveSettings);
 
 (async function init() {

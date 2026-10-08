@@ -180,6 +180,16 @@ for how it all fits together.
 Frameworks are run **one at a time** so they never compete for RAM/GPU. You can
 **Stop** a run at any time — in-flight work is killed and partial results are kept.
 
+**Max cell run time (2 h).** A *cell* is one framework × harness × task
+combination. Every cell gets a hard wall-clock cap of 7200 seconds: if the
+harness is still working when the cap hits, it is stopped, any artifact it
+already wrote is kept, and the cell is recorded as an error row
+(`timeout after 7200s`). This keeps one stuck cell from blocking a
+multi-day campaign, and the timeouts themselves are honest data — a slow
+framework burning the full budget is a real result. The cap is fixed for
+now; making it configurable on the dashboard is a planned change (see
+`PARKED.md`).
+
 
 ---
 

@@ -70,6 +70,13 @@ comparability with the 9 completed tasks wins.
 step counts). Not a bug — a metrics-dictionary note for the published
 graphs so readers don't read missing iterations as zero.
 
+## 8. Configurable max cell run time on the dashboard
+
+The 7200 s cell cap is fixed in code and shown read-only in the settings
+grid. Expose it as a dashboard parameter (per run, with a sane maximum) so
+users can shorten it for quick passes or extend it for slow
+framework/model pairs. Related: #4 (task-aware budgets).
+
 ## 7. Config/state split (post-release)
 
 `config.json` still persists the full merged tree (notes, start commands,
