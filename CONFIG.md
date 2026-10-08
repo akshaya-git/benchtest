@@ -18,6 +18,7 @@ defaults, so you only need to specify the keys you care about.
 | `pi_thinking` | string | `""` | pi thinking-level suffix appended to `--model` (e.g. `":high"`). Empty = inherit the server's reasoning setting so all cells share one uniform budget. |
 | `reasoning` | object | `{"short": "low", "long": "medium"}` | Reasoning level per task type, applied at framework server start. Standard tasks run at the `short` level, LONG tasks (chip8, raytracer, spreadsheet, markdown, conduit) at the `long` level. Each framework maps a level to its own parameter via `reasoning_flags` (CLI flags) or `reasoning_file` (omlx's per-model settings file). See below. |
 | `hart_path` | string | `"~/Documents/hart/hart.py"` | Path to the `hart` agentic harness script. |
+| `cell_timeout_s` | int | `7200` | Per-cell wall-clock cap in seconds (clamped 60–21600). A cell that exceeds it is stopped, its partial artifact kept, and the row recorded as a timeout error. Dashboard runs can override per run via *Max cell run time (min)*. |
 | `frameworks` | object | (see below) | One entry per framework. Merged per-framework over the defaults. |
 
 ## `frameworks.<id>` keys

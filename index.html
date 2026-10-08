@@ -194,7 +194,7 @@
       <div class="settings-grid">
         <div><label>Temperature</label><input type="number" id="temp" value="0.7" step="0.1" min="0" max="2"></div>
         <div><label>Max tokens (agents)</label><input type="number" id="maxTok" value="65536" step="256" min="64"></div>
-        <div><label title="Every cell (one framework × harness × task) is killed at this wall-clock cap; its partial artifact is kept and the cell is recorded as an error. Fixed at 2 h for now — configurability is parked (see PARKED.md)">Max cell run time</label><input type="text" value="7200 s (2 h)" disabled style="opacity:.75"></div>
+        <div><label title="Every cell (one framework × harness × task) is stopped at this wall-clock cap; its partial artifact is kept and the cell is recorded as a timeout error. Applies to runs started from the dashboard; campaigns use the cell_timeout_s config default">Max cell run time (min)</label><input type="number" id="cellMin" value="120" step="5" min="5" max="360"></div>
         <div><label>Top P</label><input type="number" id="topP" value="0.95" step="0.05" min="0" max="1"></div>
       </div>
     </div>
@@ -1061,6 +1061,7 @@ async function startRun() {
     settings: {
       temperature: parseFloat($('temp').value),
       max_tokens: parseInt($('maxTok').value),
+      cell_timeout_s: (parseInt($('cellMin').value) || 120) * 60,
       top_p: parseFloat($('topP').value),
     }
   });
@@ -1248,6 +1249,7 @@ function saveSettings() {
       temp: $('temp').value,
       maxTok: $('maxTok').value,
       topP: $('topP').value,
+      cellMin: $('cellMin').value,
       prompt: $('promptBox').value,
       harnesses: [...document.querySelectorAll('#harnessGrid input:checked')].map(i => i.value),
     }));
@@ -1262,7 +1264,7 @@ function loadSettings() {
     const t = TASKS.find(x => x.id === s.task);
     if (t && s.prompt == null) $('promptBox').value = t.prompt;
   }
-  for (const id of ['temp', 'maxTok', 'topP'])
+  for (const id of ['temp', 'maxTok', 'cellMin', 'topP'])
     if (s[id] != null) $(id).value = s[id];
   // one-time migration: 32k caps predate the 64k uniform setting
   if (s.maxTok === '32768' || s.maxTok === 32768) {
@@ -1281,7 +1283,7 @@ function loadSettings() {
 }
 
 /* ---- init ---- */
-['temp', 'maxTok', 'topP'].forEach(id => $(id).addEventListener('change', saveSettings));
+['temp', 'maxTok', 'cellMin', 'topP'].forEach(id => $(id).addEventListener('change', saveSettings));
 $('promptBox').addEventListener('input', saveSettings);
 
 (async function init() {

@@ -168,6 +168,7 @@ DEFAULT_CONFIG = {
     # omlx settings file via reasoning_file). LONG tasks (chip8, raytracer,
     # spreadsheet, markdown, conduit) get 'medium'; standard tasks get 'low'.
     "reasoning": {"short": "low", "long": "low"},
+    "cell_timeout_s": 7200,
         # Model sets: the UI's Model radio picks one of these keys; the
         # backend maps it to the right per-framework model id (each engine
         # gets a conversion its MTP implementation supports). Frameworks
@@ -491,7 +492,9 @@ def campaign_runner(mode, sets, resume_index=0, harnesses=None):
                                "settings": {"temperature": 0.5, "top_p": 0.95,
                                             "max_tokens": 65536,
                                             "max_tokens_raw": 65536,
-                                            "repeats": 1}})
+                                            "repeats": 1,
+                                            "cell_timeout_s":
+                                                int(CONFIG.get("cell_timeout_s", 7200))}})
             except RunStopped:
                 raise
             except Exception as e:
@@ -2748,6 +2751,13 @@ def run_harness(fw, harness, task_name, prompt, settings, task=None):
     in the activity log so failures are diagnosable."""
     cfg = FRAMEWORKS[fw]
     label = HARNESS_LABELS.get(harness, harness)
+    # per-cell wall-clock cap: dashboard "Max cell run time" (cell_timeout_s,
+    # seconds) or the global CLI_TIMEOUT default; clamped to 1 min..6 h
+    try:
+        t_cap = max(60, min(21600, int(settings.get("cell_timeout_s")
+                                         or CLI_TIMEOUT)))
+    except (TypeError, ValueError):
+        t_cap = CLI_TIMEOUT
     truncated = False
     artifact = None
     metrics = {}
@@ -2819,13 +2829,14 @@ def run_harness(fw, harness, task_name, prompt, settings, task=None):
                         "error": f"hart harness not found at {HART_PATH}"}
             workdir = os.path.join(WORK_DIR, f"{fw}-{harness}-{uuid.uuid4().hex[:8]}")
             os.makedirs(workdir, exist_ok=True)
-            # Cell bounds: standard tasks 2×1500s; long-horizon tasks
-            # 3×2400s (~2h ceiling, matching CLI_TIMEOUT). hart's internal
-            # defaults (50 epochs) are for standalone use only.
+            # Cell bounds scale with the cell cap: standard tasks
+            # 2 × cap·5/24 (7200 → 2×1500s); long-horizon tasks 3 × cap/3
+            # (7200 → 3×2400s ≈ the whole cap). hart's internal defaults
+            # (50 epochs) are for standalone use only.
             if settings.get("long_task"):
-                t_budget, epochs = "2400", "3"
+                t_budget, epochs = str(max(60, t_cap // 3)), "3"
             else:
-                t_budget, epochs = "1500", "2"
+                t_budget, epochs = str(max(60, round(t_cap * 5 / 24 / 10) * 10)), "2"
             cmd = [sys.executable, HART_PATH,
                    "--base-url", agent_base_url(fw),
                    "--model", cfg["model"],
@@ -2876,7 +2887,7 @@ def run_harness(fw, harness, task_name, prompt, settings, task=None):
                     log(rendered[:160], fw=cfg["name"], harness=label)
 
             out, errtext, rc, stopped, timed_out = run_cli_abortable(
-                cmd, env, workdir, CLI_TIMEOUT, line_cb=_line_handler, fw=fw)
+                cmd, env, workdir, t_cap, line_cb=_line_handler, fw=fw)
             sweep_stray_processes()   # detached helper scripts die with the cell
             gen = time.monotonic() - t0
             if stopped:
@@ -2953,15 +2964,15 @@ def run_harness(fw, harness, task_name, prompt, settings, task=None):
                     with open(artifact, encoding="utf-8", errors="replace") as f:
                         ntok = len(f.read().split())
                     truncated = True
-                    log(f"{label} timed out after {CLI_TIMEOUT}s but the artifact "
+                    log(f"{label} timed out after {t_cap}s but the artifact "
                         f"was delivered — keeping it{extra}",
                         fw=cfg["name"], harness=label, level="err")
                 else:
-                    log(f"{label} timed out after {CLI_TIMEOUT}s{extra}",
+                    log(f"{label} timed out after {t_cap}s{extra}",
                         fw=cfg["name"], harness=label, level="err")
                     return {"status": "error", "latency": round(time.monotonic() - t0, 2),
                             "tokens": 0, "tps": 0.0,
-                            "error": f"timeout after {CLI_TIMEOUT}s{extra}"}
+                            "error": f"timeout after {t_cap}s{extra}"}
             elif rc != 0:
                 err = (out or "no output").strip()[-300:]
                 if artifact:
@@ -3063,7 +3074,8 @@ def _validate_run(req):
     settings = req.get("settings") or {}
     if not isinstance(settings, dict):
         raise ValueError("settings: object required")
-    for k in ("temperature", "top_p", "max_tokens", "max_tokens_raw", "repeats"):
+    for k in ("temperature", "top_p", "max_tokens", "max_tokens_raw", "repeats",
+              "cell_timeout_s"):
         if k in settings and settings[k] is not None \
                 and not isinstance(settings[k], (int, float)):
             raise ValueError(f"settings.{k}: number required")
