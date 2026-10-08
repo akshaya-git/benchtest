@@ -48,13 +48,29 @@ budgets, or at least surfacing "likely to time out" in the fit/validate
 panel. The timeouts themselves are legitimate performance data and stay in
 the published numbers.
 
-## 5. Document `iterations` coverage
+## 5. MTPLX stream-stall watchdog vs LONG thinking tasks
+
+MTPLX kills any model stream that is silent for ~300s
+(`mtplx_stream_stall_break`, its `--stream-stall-deadline-s`). On
+`markdown` (LONG, heavy-thinking) the qwen-27B Quality build hit this
+repeatedly: 14 stall-breaks in the current MTPLX log. Consequences
+observed: `mtplx/hart` churned on stream-recovery until the 7200s cell
+timeout (error row), and `mtplx/opencode` exited 1 earlier the same task
+(see #3). The tool behaved correctly (honest error rows, artifacts kept) —
+this is framework behavior under thinking-heavy tasks, and the published
+numbers should say so. Fix after the campaigns: consider a per-task-class
+stall deadline (e.g. 900s for LONG tasks) or documenting the interaction;
+optionally re-run the two failed cells as a clearly-labeled supplementary
+run with a raised deadline. Do NOT change MTPLX settings mid-campaign —
+comparability with the 9 completed tasks wins.
+
+## 6. Document `iterations` coverage
 
 `iterations` only exists for opencode and hart (pi and goose do not emit
 step counts). Not a bug — a metrics-dictionary note for the published
 graphs so readers don't read missing iterations as zero.
 
-## 6. Config/state split (post-release)
+## 7. Config/state split (post-release)
 
 `config.json` still persists the full merged tree (notes, start commands,
 runtime state) rather than sparse overrides + a separate state file.
