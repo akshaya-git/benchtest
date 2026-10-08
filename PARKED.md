@@ -77,6 +77,14 @@ grid. Expose it as a dashboard parameter (per run, with a sane maximum) so
 users can shorten it for quick passes or extend it for slow
 framework/model pairs. Related: #4 (task-aware budgets).
 
+## 9. Repeat aggregation (if variance is ever wanted)
+
+The dashboard's Repeats setting was removed: it re-ran cells N times but
+never aggregated the results — pure run-time multiplication with no median
+or sigma computed. If variance measurement is wanted later, re-introduce
+repeats WITH aggregation (median ± spread per cell) and a visible
+indicator; the backend still accepts `repeats` (clamped 1–5, default 1).
+
 ## 7. Config/state split (post-release)
 
 `config.json` still persists the full merged tree (notes, start commands,
