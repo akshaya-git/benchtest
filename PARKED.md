@@ -28,13 +28,17 @@ Goose (and generally disk-artifact agents) via the server-side token delta
 in the cell window, or reliably parse goose's stats block. Until then,
 published agent charts must use `server_tgs`, never client `tps`.
 
-## 3. `logreport` × opencode: empty response on all four frameworks
+## 3. opencode exits 1 with no output (second occurrence: markdown × mtplx)
 
-Systematic task+harness combination failure (all four frameworks' opencode
-cells returned empty on logreport in the qwen38-27b campaign) — points at
-an opencode cap/config interaction with that task's long inline log, not a
-model issue. Diagnose after the campaign: run one logreport/opencode cell
-with a raised per-call cap and inspect the stream.
+opencode is the only harness with unexplained hard exits. Data points from
+the qwen38-27b campaign: (a) logreport — empty response on ALL FOUR
+frameworks' opencode cells; (b) markdown — `opencode exited 1: no output`
+on mtplx (other three frameworks finished the same task). Points at an
+opencode cap/config/CLI-stability interaction, not a model or framework
+issue. Diagnose after the campaign: reproduce one failing cell with a
+raised per-call cap, capture opencode's own stderr, and check whether the
+CLI version we test against has a known exit-1 mode (the skill says to pin
+the CLI versions we validate).
 
 ## 4. Task-aware time budgets
 
