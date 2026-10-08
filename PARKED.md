@@ -78,6 +78,22 @@ or sigma computed. If variance measurement is wanted later, re-introduce
 repeats WITH aggregation (median ± spread per cell) and a visible
 indicator; the backend still accepts `repeats` (clamped 1–5, default 1).
 
+## 10. RAM free calculation: no cached-file credit
+
+User direction: cached files are fungible and dynamic — their size swings
+constantly — so RAM calculations should not lean on them. Current state of
+the two numbers: the dashboard **display** (`free_ram`) already excludes
+cache (pages free + speculative only; verified against Activity Monitor);
+the **fit verdicts** (`available_ram`, used by Validate/model-set fit
+gating) DO credit inactive + purgeable pages — the cache — as claimable.
+This parked change removes that credit: fit verdicts then judge against
+hard-free RAM only, i.e. conservative. Trade-off to accept consciously:
+models that would in practice load fine (macOS evicts clean cache on
+demand — a 100 GB model on an 81 GB-free machine with 29 GB cached) will
+read as tight/wont-fit. If implemented, keep the display/fit split (they
+answer different questions) and re-verify the fit tags against a real
+model load afterwards.
+
 ## 7. Config/state split (post-release)
 
 `config.json` still persists the full merged tree (notes, start commands,
