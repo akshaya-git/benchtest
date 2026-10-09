@@ -10,14 +10,15 @@ published. Work in this order — each phase gates the next.
 - [ ] Prepare HF packaging (do NOT push yet — numbers must freeze first):
       results Dataset repo (the run JSONs), a static graph Space with a
       prominent GitHub link, and a community-article draft
-- [ ] When qwen38-27b completes: snapshot its 11 run JSONs →
+- [x] When qwen38-27b completes: snapshot its 11 run JSONs →
       `results/qwen38-27b/`; repeat for flash-next after campaign 2
 
 ## Phase 1 — final tool updates (after both campaigns)
 
-- [ ] Work through `PARKED.md`: `mlxlm`→`mlxvlm` id rename (first — before
-      any new runs), Goose token accounting (server-side counts), opencode
-      exit-1 diagnosis, `iterations` coverage note, task-aware budgets
+- [x] `mlxlm`→`mlxvlm` id rename (config auto-migrates on load)
+- [x] Goose/agent token accounting via server-side completion deltas
+- [x] RAM fit drops cached-file credit; cell run time configurable
+- [ ] opencode exit-1 diagnosis (needs a model up — do during flash-next prep)
 - [ ] Decide (and apply) any "reduce complexity for community users"
       simplifications discovered on the fresh-user pass below
 

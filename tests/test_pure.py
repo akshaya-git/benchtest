@@ -210,6 +210,21 @@ class TestNormalizeKey(unittest.TestCase):
                          "models--model")
 
 
+class TestMigrateMlxlm(unittest.TestCase):
+    def test_renames_framework_and_set_keys_preserving_order(self):
+        cfg = {"frameworks": {"omlx": {}, "mlxlm": {"port": 7003}, "mtplx": {}},
+               "model_sets": {"s": {"models": {"mlxlm": "org/name",
+                                               "omlx": "other"}}}}
+        out = server._migrate_mlxlm(cfg)
+        self.assertEqual(list(out["frameworks"]), ["omlx", "mlxvlm", "mtplx"])
+        self.assertEqual(out["frameworks"]["mlxvlm"]["port"], 7003)
+        self.assertEqual(out["model_sets"]["s"]["models"]["mlxvlm"], "org/name")
+
+    def test_noop_without_mlxlm(self):
+        cfg = {"frameworks": {"omlx": {}}}
+        self.assertEqual(server._migrate_mlxlm(cfg)["frameworks"], {"omlx": {}})
+
+
 class TestTasks(unittest.TestCase):
     def test_unique_task_ids(self):
         ids = [t["id"] for t in server.TASKS]

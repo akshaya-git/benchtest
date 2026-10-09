@@ -52,7 +52,7 @@ if "$PY" -c 'import mlx_vlm' >/dev/null 2>&1; then
   ok "mlx_vlm importable by $PY"
 else
   warn "mlx_vlm not importable by $PY — MLX-VLM framework will be skipped"
-  warn "   (pip install mlx-vlm into the interpreter you point 'mlxlm' at)"
+  warn "   (pip install mlx-vlm into the interpreter you point 'mlxvlm' at)"
 fi
 
 # --- Agent harnesses (optional: only needed for the agent rows) ---

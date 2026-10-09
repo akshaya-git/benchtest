@@ -23,7 +23,7 @@ defaults, so you only need to specify the keys you care about.
 
 ## `frameworks.<id>` keys
 
-Each framework has a stable id (e.g. `omlx`, `mtplx`, `mlxlm`, `mlxserve`). You can
+Each framework has a stable id (e.g. `omlx`, `mtplx`, `mlxvlm`, `mlxserve`). The MLX-VLM framework's id was renamed from `mlxlm` to `mlxvlm` — the wrapped engine is mlx-vlm (MLX-LM is a different project without MTP support); old configs are migrated on load. You can
 **add** new frameworks or **remove** ones you don't use — the UI renders whatever is
 here.
 

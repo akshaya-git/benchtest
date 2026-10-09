@@ -166,12 +166,12 @@ def tail_bench_log(lines: int = 60, only_errors: bool = False) -> str:
 
 @mcp.tool()
 def framework_log(framework: str, lines: int = 60, only_errors: bool = True) -> str:
-    """Tail a framework server log (omlx, mtplx, mlxlm, mlxserve) — newest
+    """Tail a framework server log (omlx, mtplx, mlxvlm, mlxserve) — newest
     file for that framework. Server-side errors (memory guard, stream-stall
     breaks, load failures) show up here, not in bench.log."""
     framework = (framework or "").strip().lower()
-    if framework not in ("omlx", "mtplx", "mlxlm", "mlxserve"):
-        return "framework must be one of: omlx, mtplx, mlxlm, mlxserve"
+    if framework not in ("omlx", "mtplx", "mlxvlm", "mlxserve"):
+        return "framework must be one of: omlx, mtplx, mlxvlm, mlxserve"
     hits = sorted(glob.glob(os.path.join(ROOT, "logs", f"{framework}-*.log")),
                   key=os.path.getmtime)
     if not hits:

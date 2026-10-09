@@ -60,7 +60,7 @@ AI host.
 | `get_run` | `run_file: str` | Full per-cell records of one saved run — pass the file-name part of a `runs/<ts>.json` entry (e.g. `20261006-032316`). Includes run time, tokens, TPS, truncation flags, error strings and `output_url` per cell. |
 | `compare_runs` | `run_a: str`, `run_b: str` | Side-by-side A/B of two runs that ran the SAME task: per framework/harness pair, TPS, run time and status from each. The "which framework/model is faster" tool. |
 | `tail_bench_log` | `lines: int = 60`, `only_errors: bool = False` | Tail of `logs/bench.log` — the primary forensics source for what any harness or framework actually did. `only_errors` filters to failure-class lines. |
-| `framework_log` | `framework: str`, `lines: int = 60`, `only_errors: bool = True` | Tail of a framework server log (`omlx`, `mtplx`, `mlxlm`, `mlxserve`), newest file for that framework. Server-side failures (memory guard, stream stalls, load failures) show up here, not in `bench.log`. |
+| `framework_log` | `framework: str`, `lines: int = 60`, `only_errors: bool = True` | Tail of a framework server log (`omlx`, `mtplx`, `mlxvlm`, `mlxserve`), newest file for that framework. Server-side failures (memory guard, stream stalls, load failures) show up here, not in `bench.log`. |
 
 **Mutating (change benchmark state; described as MUTATES in the tool docs):**
 
@@ -189,6 +189,6 @@ host you don't control.
 |---|---|
 | Host doesn't list `benchtest` after registration | Restart the host; check the command path is absolute and the venv exists (`mcp/venv/bin/python -V`). |
 | Tools error with connection refused | The backend isn't running — `python3 server.py` in the repo root — or `BENCHTEST_URL` points at the wrong host/port. |
-| `framework_log` returns "no log files for …" | No server log exists yet for that framework — start that framework once (or it isn't a valid name; allowed: `omlx`, `mtplx`, `mlxlm`, `mlxserve`). |
+| `framework_log` returns "no log files for …" | No server log exists yet for that framework — start that framework once (or it isn't a valid name; allowed: `omlx`, `mtplx`, `mlxvlm`, `mlxserve`). |
 | `start_campaign` refuses | A run or campaign is already active — check `bench_state`, `stop_run` first. |
 | Claude Desktop shows nothing | Config file location/format is per-OS; use Settings → Developer → Edit Config and restart the app fully. |

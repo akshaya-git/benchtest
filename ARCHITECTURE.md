@@ -177,7 +177,7 @@ flowchart TB
     L --> MG[merge + de-dup<br/>normalize_key: org/name == org--name]
     M --> MG
     S --> MG
-    MG --> TAG[tag by model_source<br/>hf → omlx/mlxlm/mlxserve<br/>mtplx → mtplx]
+    MG --> TAG[tag by model_source<br/>hf → omlx/mlxvlm/mlxserve<br/>mtplx → mtplx]
     TAG --> C[compatibility scoring]
     RAM[free RAM<br/>vm_stat / /proc/meminfo, 3s cache] --> C
     CTX[configured ctx_tokens] --> C

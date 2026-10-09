@@ -19,7 +19,7 @@ python3 hart.py --framework omlx "Write tetris.html: a playable Tetris game"
 - macOS with Python 3.9+ (`python3 --version`) — nothing else; stdlib only.
 - A running OpenAI-compatible backend. Built-in presets:
   `--framework omlx` (:7001, scottlowry--Qwen3.8-27B-oQ6e-mtp), `--framework
-  mtplx` (:7002, mtplx-qwen38-27b-optimized-quality), `--framework mlxlm`
+  mtplx` (:7002, mtplx-qwen38-27b-optimized-quality), `--framework mlxvlm`
   (:7003, mlx-community/Qwen3.8-27B-8bit), `--framework mlxserve`
   (:7004, mlx-community/Qwen3.8-27B-8bit — repo name or hash id both work).
   Start hints:

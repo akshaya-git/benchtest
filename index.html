@@ -914,7 +914,7 @@ async function initModelPanel() {
     const m = await api('/api/machine');
     document.getElementById('machineLine').textContent =
       (m.chip || 'Mac') + ' \u00b7 ' + m.total_gb + ' GB RAM \u00b7 ~' + m.usable_gb + ' GB usable';
-    const defaults = { omlx: m.hf_cache, mlxlm: m.hf_cache,
+    const defaults = { omlx: m.hf_cache, mlxvlm: m.hf_cache,
                        mlxserve: m.hf_cache, mtplx: m.mtplx_store };
     Object.keys(FRAMEWORKS).forEach(fw => {
       const inp = document.querySelector('.fwFolder[data-fw="' + fw + '"]');

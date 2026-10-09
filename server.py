@@ -105,7 +105,7 @@ DEFAULT_FRAMEWORKS = {
     # for-like MTP comparison. Context length follows the model config; there
     # is no server-side context flag in mlx-lm. --max-tokens here is the
     # server-side cap (its default of 8192 would truncate thinking models).
-    "mlxlm": {
+    "mlxvlm": {
         "name": "MLX-VLM",
         "model_source": "hf",
         "port": 7003,
@@ -181,7 +181,7 @@ DEFAULT_CONFIG = {
                 "models": {
                     "omlx": "Jundot/Qwen3.8-27B-oQ8e-mtp",
                     "mtplx": "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality",
-                    "mlxlm": "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality",
+                    "mlxvlm": "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality",
                     "mlxserve": "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality"
                 }
             },
@@ -231,6 +231,23 @@ def _atomic_write_json(path, data):
         raise
 
 
+def _migrate_mlxlm(cfg):
+    """Rename the framework id mlxlm -> mlxvlm everywhere in a loaded config
+    (frameworks + every model_set's models map), preserving key order. The
+    wrapped engine is mlx-vlm; MLX-LM is a different project that does not
+    support MTP for these models."""
+    fw = cfg.get("frameworks")
+    if isinstance(fw, dict) and "mlxlm" in fw:
+        cfg["frameworks"] = {("mlxvlm" if k == "mlxlm" else k): v
+                             for k, v in fw.items()}
+    for s in (cfg.get("model_sets") or {}).values():
+        if isinstance(s, dict) and isinstance(s.get("models"), dict) \
+                and "mlxlm" in s["models"]:
+            s["models"] = {("mlxvlm" if k == "mlxlm" else k): v
+                           for k, v in s["models"].items()}
+    return cfg
+
+
 def load_config():
     """Load config.json over the built-in defaults. On first run, seed
     config.json from config.example.json so users can discover and edit it."""
@@ -262,7 +279,7 @@ def load_config():
                     json.dump(DEFAULT_CONFIG, f, indent=2)
         except OSError:
             pass
-    return cfg
+    return _migrate_mlxlm(cfg)
 
 
 def save_config():
@@ -583,7 +600,7 @@ TASKS = [
     {"id": "logreport", "name": "Log Analyst · failure report", "artifact": "report.html",
      "static_report": True,
      "prompt": "You are given the logs of a PREVIOUS benchmark run that tested local LLM inference frameworks (OMLX, MTPLX, MLX-VLM, MLX-Serve) across agent harnesses (raw, raw+, pi, opencode, Goose, hart). The input files are in the directory "
-               + WORK_DIR + "/logreport-fixture/ — read them: runs.json (per-cell records: framework, harness, status, latency, error), errors.log (the orchestrator's failure lines), bench-excerpt.log (its full log window) and omlx.log / mtplx.log / mlxlm.log / mlxserve.log (framework server error excerpts). The same runs.json and errors.log content is also inlined below between <input> markers.\n\n"
+               + WORK_DIR + "/logreport-fixture/ — read them: runs.json (per-cell records: framework, harness, status, latency, error), errors.log (the orchestrator's failure lines), bench-excerpt.log (its full log window) and omlx.log / mtplx.log / mlxvlm.log / mlxserve.log (framework server error excerpts). The same runs.json and errors.log content is also inlined below between <input> markers.\n\n"
                "Do exactly three things:\n"
                "1. Classify every cell in runs.json as passed (status \"done\") or failed (any other status).\n"
                "2. For each failed cell, find its root cause: match its framework and harness against errors.log / bench-excerpt.log and quote the single most relevant log line. Known failure classes in these logs: \"empty response\", \"timeout after 7200s\", \"no output\", \"stopped by user\", stream-stall breaks, memory-guard rejections.\n"
@@ -699,7 +716,7 @@ def _build_logreport_fixture():
             fh.writelines(err_lines[-120:])
 
     # per-framework server logs: error-class lines only, capped
-    for fw in ("omlx", "mtplx", "mlxlm", "mlxserve"):
+    for fw in ("omlx", "mtplx", "mlxvlm", "mlxserve"):
         logs = sorted(glob.glob(os.path.join(LOG_DIR, f"{fw}-*.log")),
                       key=os.path.getmtime)
         if not logs:
@@ -882,11 +899,13 @@ _RAM_CACHE = {"t": 0.0, "free": 0, "total": 0}
 
 
 def available_ram():
-    """RAM a model load can actually claim = free + speculative + purgeable +
-    inactive. Cached files (the bulk of inactive here) are fungible: macOS
-    evicts clean file-backed pages on demand, so fit verdicts must credit
-    them. DIFFERENT from free_ram() on purpose: that one mirrors Activity
-    Monitor's "free" (excludes cache) for the dashboard display."""
+    """RAM a model load can claim = free + speculative + purgeable. Inactive
+    (cache) pages are NOT credited, by explicit operator decision: the cache
+    is fungible and dynamic — its size swings constantly — so fit verdicts
+    judge against hard-free RAM only, i.e. conservative. (macOS would in
+    practice evict clean cache on demand, so a borderline model may read
+    tight/wont-fit and still load.) DIFFERENT from free_ram() on purpose:
+    that one mirrors Activity Monitor's "free" for the dashboard display."""
     total = _total_mem()
     try:
         if sys.platform == "darwin":
@@ -894,8 +913,7 @@ def available_ram():
                                  text=True, timeout=5).stdout
             ps = int(re.search(r"page size of (\d+) bytes", out).group(1))
             n = 0
-            for k in ("Pages free", "Pages speculative",
-                      "Pages purgeable", "Pages inactive"):
+            for k in ("Pages free", "Pages speculative", "Pages purgeable"):
                 m = re.search(k + r":\s+(\d+)", out)
                 if m:
                     n += int(m.group(1))
@@ -1055,7 +1073,7 @@ def server_snapshot(fw):
                 "gen_s": m.get("vllm:request_decode_time_seconds_sum", 0.0),
                 "ttft_s": m.get("vllm:time_to_first_token_seconds_sum", 0.0),
                 "ttft_n": m.get("vllm:time_to_first_token_seconds_count", 0)}
-    if fw == "mlxlm":  # mlx_vlm.server: JSON /metrics with per-request records
+    if fw == "mlxvlm":  # mlx_vlm.server: JSON /metrics with per-request records
         m = _get_json(f"http://127.0.0.1:{cfg['port']}/metrics")
         if m is None:
             return None
@@ -3014,7 +3032,7 @@ def run_harness(fw, harness, task_name, prompt, settings, task=None):
     # iterations = how many model requests the harness needed. Sources per
     # harness: calls (pi/hart step counts), 1+continuations (raw+ rounds),
     # server_requests (opencode/goose via the framework's own counter),
-    # 1 for raw. None when nothing measured (e.g. mlxlm cells).
+    # 1 for raw. None when nothing measured (e.g. mlxvlm cells).
     iters = (metrics.get("calls")
              or (1 + metrics["continuations"] if metrics.get("continuations")
                  else None)
@@ -3245,6 +3263,19 @@ def run_benchmark(req):
                                 srv = {}
                         if srv:
                             row.update(srv)
+                        # agent cells whose stream gave no exact tokens (goose
+                        # writes the artifact to disk and chats ~300 tokens;
+                        # hart narrates) undercount massively — the server-side
+                        # completion delta counts EVERY token the model
+                        # produced in the cell window. Use it as the truth.
+                        if row.get("tokens_estimated") \
+                                and srv.get("server_completion_tokens"):
+                            row["tokens"] = srv["server_completion_tokens"]
+                            row["tokens_source"] = "server"
+                            row["tokens_estimated"] = False
+                            if row.get("latency"):
+                                row["tps"] = round(
+                                    row["tokens"] / row["latency"], 1)
                         # context fill % and effective-bandwidth estimate
                         if row.get("prompt_tokens") and cfg.get("ctx_tokens"):
                             row["ctx_fill_pct"] = round(
@@ -3395,7 +3426,7 @@ def _validate_model_pick(fw, model):
                 f"Start it to find out."}
     fws = list(cand.get("frameworks") or [])
     if cand.get("custom_path") and not fws:
-        fws = ["mlxlm", "mlxserve"]   # plain folder models: path-servable only
+        fws = ["mlxvlm", "mlxserve"]   # plain folder models: path-servable only
     if fw not in fws:
         where = ("the MTPLX store (a different runtime format)"
                  if (cand.get("source") or "") == "mtplx"
@@ -3443,7 +3474,7 @@ def _scan_models_payload(store_filter=None, extra=None):
                 "id": entry, "store": "custom", "custom_path": d,
                 "size_gb": discovery.dir_size_gb(d),
                 "context_length": discovery.file_context(os.path.join(d, "config.json")),
-                "frameworks": ["mlxlm", "mlxserve"],
+                "frameworks": ["mlxvlm", "mlxserve"],
                 "in_cache": False, "served": False,
             })
     models_out = []

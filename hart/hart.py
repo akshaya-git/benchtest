@@ -57,7 +57,7 @@ FRAMEWORKS = {
         "ctx_tokens": 262144,
         "start_hint": "mlx-serve --model mlx-community/Qwen3.8-27B-8bit --serve --port 7004",
     },
-    "mlxlm": {
+    "mlxvlm": {
         "base_url": "http://127.0.0.1:7003/v1",
         "model": "mlx-community/Qwen3.8-27B-8bit", "model_gb": 28,
         "ctx_tokens": 262144,

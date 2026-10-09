@@ -66,7 +66,7 @@
       },
       "reasoning_override": "low"
     },
-    "mlxlm": {
+    "mlxvlm": {
       "name": "MLX-VLM",
       "model_source": "hf",
       "port": 7003,
@@ -148,7 +148,7 @@
       "models": {
         "omlx": "Jundot/Qwen3.8-27B-oQ8e-mtp",
         "mtplx": "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality",
-        "mlxlm": "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality",
+        "mlxvlm": "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality",
         "mlxserve": "Youssofal/Qwen3.8-27B-MTPLX-Optimized-Quality"
       }
     },

@@ -139,7 +139,7 @@ prompt), and hit **▶ Run Benchmark**.
 |------|---------|-------|
 | **7090** | Dashboard + HTTP API | The web UI you open in the browser (`host`/`port` in `config.json`). |
 | **7010** | Measurement proxy (internal) | Must be **free** when `route_via_proxy: true` — agent harnesses (pi, opencode, goose, hart) send their model calls here; the proxy forwards to the framework under test and records per-request TTFT / prompt / completion tokens (the agent rows' PP/TGS and the token-cap-truncation warning). If 7010 is taken, set `route_via_proxy: false` (agent cells then rely on server-side metrics only) or free the port. |
-| **7001–7004** | Framework servers | `omlx` 7001, `mtplx` 7002, `mlxlm` (MLX-VLM) 7003, `mlxserve` (MLX-Serve) 7004 — per-framework `frameworks.<id>.port` in `config.json`; change freely as long as each is unique and free. |
+| **7001–7004** | Framework servers | `omlx` 7001, `mtplx` 7002, `mlxvlm` (MLX-VLM) 7003, `mlxserve` (MLX-Serve) 7004 — per-framework `frameworks.<id>.port` in `config.json`; change freely as long as each is unique and free. |
 
 The dashboard also exposes `/api/relay/<port>/<path>` so pages it serves
 (e.g. an Agent Console artifact) can reach a framework that rejects
