@@ -948,6 +948,97 @@ def available_ram():
     judge against hard-free RAM only, i.e. conservative. (macOS would in
     practice evict clean cache on demand, so a borderline model may read
     tight/wont-fit and still load.) DIFFERENT from free_ram() on purpose:
+    the display follows Activity Monitor (Physical − Used, cache counts
+    toward free); fit judging stays strict so a borderline model is flagged
+    before it swaps."""
+    total = _total_mem()
+    try:
+        if sys.platform == "darwin":
+            out = subprocess.run(["vm_stat"], capture_output=True,
+                                 text=True, timeout=5).stdout
+            ps = int(re.search(r"page size of (\d+) bytes", out).group(1))
+            n = 0
+            for k in ("Pages free", "Pages speculative", "Pages purgeable"):
+                m = re.search(k + r":\s+(\d+)", out)
+                if m:
+                    n += int(m.group(1))
+            return n * ps, total
+        if os.path.isfile("/proc/meminfo"):
+            with open("/proc/meminfo") as f:
+                for line in f:
+                    if line.startswith("MemAvailable:"):
+                        return int(line.split()[1]) * 1024, total
+    except Exception:
+        pass
+    free, _ = free_ram()
+    return free, total
+
+
+def _total_mem():
+    """Total RAM in bytes — computed once (macOS sysctl / Linux meminfo)."""
+    global _TOTAL_MEM
+    if _TOTAL_MEM is None:
+        _TOTAL_MEM = 0
+        try:
+            if sys.platform == "darwin":
+                _TOTAL_MEM = int(subprocess.run(
+                    ["sysctl", "-n", "hw.memsize"],
+                    capture_output=True, text=True, timeout=5).stdout.strip())
+            elif os.path.isfile("/proc/meminfo"):
+                with open("/proc/meminfo") as f:
+                    for line in f:
+                        if line.startswith("MemTotal:"):
+                            _TOTAL_MEM = int(line.split()[1]) * 1024
+                            break
+        except Exception:
+            _TOTAL_MEM = 0
+    return _TOTAL_MEM
+
+
+def free_ram():
+    """Return (free_bytes, total_bytes) for the dashboard display: Activity
+    Monitor semantics — Physical memory minus Memory Used, where Used =
+    active (app) + wired + compressor-occupied. Cached/inactive files are
+    NOT counted as used (operator call: cache is fungible, not blocked) so
+    they sit on the free side of this equation. Linux: MemAvailable."""
+    now = time.monotonic()
+    if _RAM_CACHE["total"] and now - _RAM_CACHE["t"] < 3.0:
+        return _RAM_CACHE["free"], _RAM_CACHE["total"]
+    total = _total_mem()
+    free = 0
+    try:
+        if sys.platform == "darwin":
+            out = subprocess.run(["vm_stat"], capture_output=True,
+                                 text=True, timeout=5).stdout
+            ps = int(re.search(r"page size of (\d+) bytes", out).group(1))
+            n = 0
+            for k in ("Pages active", "Pages wired down",
+                      "Pages occupied by compressor"):
+                m = re.search(k + r":\s+(\d+)", out)
+                if m:
+                    n += int(m.group(1))
+            free = max(total - n * ps, 0)
+        elif os.path.isfile("/proc/meminfo"):
+            with open("/proc/meminfo") as f:
+                mi = {}
+                for line in f:
+                    if ":" in line:
+                        k, v = line.split(":", 1)
+                        mi[k] = int(v.split()[0]) * 1024
+            free = mi.get("MemAvailable", mi.get("MemFree", 0))
+    except Exception:
+        pass
+    _RAM_CACHE.update({"t": now, "free": free, "total": total})
+    return free, total
+
+
+def available_ram():
+    """RAM a model load can claim = free + speculative + purgeable. Inactive
+    (cache) pages are NOT credited, by explicit operator decision: the cache
+    is fungible and dynamic — its size swings constantly — so fit verdicts
+    judge against hard-free RAM only, i.e. conservative. (macOS would in
+    practice evict clean cache on demand, so a borderline model may read
+    tight/wont-fit and still load.) DIFFERENT from free_ram() on purpose:
     that one mirrors Activity Monitor's "free" for the dashboard display."""
     total = _total_mem()
     try:

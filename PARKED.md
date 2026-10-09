@@ -42,5 +42,7 @@ accepts `repeats` (clamped 1–5, default 1).
   now take the server-side completion delta (tokens_source: server).
 - RAM fit drops cached-file credit — available_ram = free + speculative +
   purgeable, conservative per operator decision.
+- Dashboard free RAM now = Physical − Memory Used (Activity Monitor
+  semantics; cached files count toward free, not used).
 - Max cell run time configurable on the dashboard; iterations coverage
   documented in CONFIG.md.
