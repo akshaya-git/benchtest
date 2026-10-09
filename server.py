@@ -32,6 +32,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import discovery
+import qa
 
 STARTUP = os.environ.get("BENCHTEST_NO_STARTUP") != "1"   # tests import cold
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -1031,93 +1032,6 @@ def free_ram():
     _RAM_CACHE.update({"t": now, "free": free, "total": total})
     return free, total
 
-
-def available_ram():
-    """RAM a model load can claim = free + speculative + purgeable. Inactive
-    (cache) pages are NOT credited, by explicit operator decision: the cache
-    is fungible and dynamic — its size swings constantly — so fit verdicts
-    judge against hard-free RAM only, i.e. conservative. (macOS would in
-    practice evict clean cache on demand, so a borderline model may read
-    tight/wont-fit and still load.) DIFFERENT from free_ram() on purpose:
-    that one mirrors Activity Monitor's "free" for the dashboard display."""
-    total = _total_mem()
-    try:
-        if sys.platform == "darwin":
-            out = subprocess.run(["vm_stat"], capture_output=True,
-                                 text=True, timeout=5).stdout
-            ps = int(re.search(r"page size of (\d+) bytes", out).group(1))
-            n = 0
-            for k in ("Pages free", "Pages speculative", "Pages purgeable"):
-                m = re.search(k + r":\s+(\d+)", out)
-                if m:
-                    n += int(m.group(1))
-            return n * ps, total
-        if os.path.isfile("/proc/meminfo"):
-            with open("/proc/meminfo") as f:
-                for line in f:
-                    if line.startswith("MemAvailable:"):
-                        return int(line.split()[1]) * 1024, total
-    except Exception:
-        pass
-    free, _ = free_ram()
-    return free, total
-
-
-def _total_mem():
-    """Total RAM in bytes — computed once (macOS sysctl / Linux meminfo)."""
-    global _TOTAL_MEM
-    if _TOTAL_MEM is None:
-        _TOTAL_MEM = 0
-        try:
-            if sys.platform == "darwin":
-                _TOTAL_MEM = int(subprocess.run(
-                    ["sysctl", "-n", "hw.memsize"],
-                    capture_output=True, text=True, timeout=5).stdout.strip())
-            elif os.path.isfile("/proc/meminfo"):
-                with open("/proc/meminfo") as f:
-                    for line in f:
-                        if line.startswith("MemTotal:"):
-                            _TOTAL_MEM = int(line.split()[1]) * 1024
-                            break
-        except Exception:
-            _TOTAL_MEM = 0
-    return _TOTAL_MEM
-
-
-def free_ram():
-    """Return (free_bytes, total_bytes). macOS: vm_stat; Linux: /proc/meminfo.
-    Cached for 3s — the UI polls /api/state every ~1.2s and this used to
-    spawn two subprocesses per poll."""
-    now = time.monotonic()
-    if _RAM_CACHE["total"] and now - _RAM_CACHE["t"] < 3.0:
-        return _RAM_CACHE["free"], _RAM_CACHE["total"]
-    total = _total_mem()
-    free = 0
-    try:
-        if sys.platform == "darwin":
-            # Pages free + speculative = Activity Monitor's free (total minus
-            # its "Memory Used" and "Cached Files": verified against AM side
-            # by side — AM showed Used 18.35 + Cached 28.87 → free 80.8 GB,
-            # vm_stat free+spec read 81.2 GB). The kernel's "available"
-            # percentage (memory_pressure) overstates for this purpose: it
-            # counts cached files as free.
-            out = subprocess.run(["vm_stat"], capture_output=True,
-                                 text=True, timeout=5).stdout
-            ps = int(re.search(r"page size of (\d+) bytes", out).group(1))
-            free = (int(re.search(r"Pages free:\s+(\d+)", out).group(1))
-                    + int(re.search(r"Pages speculative:\s+(\d+)", out).group(1))) * ps
-        elif os.path.isfile("/proc/meminfo"):
-            with open("/proc/meminfo") as f:
-                mi = {}
-                for line in f:
-                    if ":" in line:
-                        k, v = line.split(":", 1)
-                        mi[k] = int(v.split()[0]) * 1024
-            free = mi.get("MemAvailable", mi.get("MemFree", 0))
-    except Exception:
-        free = 0
-    _RAM_CACHE.update({"t": now, "free": free, "total": total})
-    return free, total
 
 
 def port_open(port):
@@ -3412,6 +3326,9 @@ def run_benchmark(req):
                             if row.get("latency"):
                                 row["tps"] = round(
                                     row["tokens"] / row["latency"], 1)
+                        row.update(qa.evaluate(row, os.path.join(
+                            OUTPUT_DIR, row["output_url"].rsplit("/", 1)[-1])
+                            if row.get("output_url") else None))
                         # context fill % and effective-bandwidth estimate
                         if row.get("prompt_tokens") and cfg.get("ctx_tokens"):
                             row["ctx_fill_pct"] = round(

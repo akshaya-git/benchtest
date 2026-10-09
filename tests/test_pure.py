@@ -23,6 +23,7 @@ sys.path.insert(0, ROOT)
 
 import server          # noqa: E402  (env var must be set first)
 import discovery       # noqa: E402
+import qa              # noqa: E402
 
 
 class TestHtmlExtraction(unittest.TestCase):
@@ -208,6 +209,61 @@ class TestNormalizeKey(unittest.TestCase):
     def test_plain_name_maps_to_cache_form(self):
         self.assertEqual(discovery.normalize_key("model"),
                          "models--model")
+
+
+class TestNoDuplicateDefs(unittest.TestCase):
+    def test_server_has_no_duplicate_top_level_defs(self):
+        # a patch once left two free_ram definitions; Python's last-wins
+        # silently ran the OLD one. Ban duplicate top-level defs entirely.
+        import ast as _ast
+        tree = _ast.parse(open(os.path.join(ROOT, "server.py")).read())
+        names = [n.name for n in tree.body
+                 if isinstance(n, (_ast.FunctionDef, _ast.ClassDef))]
+        dupes = {n for n in names if names.count(n) > 1}
+        self.assertEqual(dupes, set())
+
+
+class TestQa(unittest.TestCase):
+    def _html(self, tmp, body, name="app.html"):
+        import tempfile as _t
+        p = os.path.join(tmp, name)
+        with open(p, "w") as f:
+            f.write(body)
+        return p
+
+    def test_full_pass_artifact(self):
+        import tempfile as _t
+        with _t.TemporaryDirectory() as d:
+            p = self._html(d, "<!DOCTYPE html><html><body>" + "x" * 6000
+                           + "<div>12/12 passed</div></body></html>")
+            r = qa.evaluate({"status": "done"}, p)
+        self.assertEqual(r["qa_score"], 100)
+        self.assertIn("12/12 passed", r["qa_notes"])
+
+    def test_truncated_html_loses_complete_and_untruncated(self):
+        import tempfile as _t
+        with _t.TemporaryDirectory() as d:
+            p = self._html(d, "<!DOCTYPE html><html><body>" + "x" * 6000)
+            r = qa.evaluate({"status": "done", "truncated": True}, p)
+        self.assertLessEqual(r["qa_score"], 70)
+        self.assertTrue(any("cut off" in n for n in r["qa_notes"].split("; ")))
+
+    def test_missing_artifact_scores_zero_delivery(self):
+        r = qa.evaluate({"status": "done"}, "/nonexistent/x.html")
+        self.assertLessEqual(r["qa_score"], 30)
+        self.assertIn("missing on disk", r["qa_notes"])
+
+    def test_error_row_is_zero(self):
+        r = qa.evaluate({"status": "error", "error": "timeout"}, None)
+        self.assertEqual(r["qa_score"], 0)
+        self.assertIn("timeout", r["qa_notes"])
+
+    def test_text_artifact_without_selftest_partial_credit(self):
+        import tempfile as _t
+        with _t.TemporaryDirectory() as d:
+            p = self._html(d, "# Report\n\n" + "word " * 500, "report.md")
+            r = qa.evaluate({"status": "done"}, p)
+        self.assertEqual(r["qa_score"], 80)   # 20+20+20 + 10 partial + 10
 
 
 class TestMigrateMlxlm(unittest.TestCase):

@@ -74,7 +74,8 @@ def bench_state() -> str:
                      ("status", "sets", "index", "plan_total", "current", "skipped")},
         "results": [
             {k: r.get(k) for k in ("framework", "harness", "status",
-                                   "tps", "latency", "error", "output_url")}
+                                   "qa_score", "tps", "latency", "error",
+                                   "output_url")}
             for r in (d.get("results") or [])
         ],
     }
@@ -114,7 +115,7 @@ def get_run(run_file: str) -> str:
     with open(f) as fh:
         d = json.load(fh)
     rows = [{k: r.get(k) for k in ("framework", "harness", "status", "latency",
-                                   "tokens", "tps", "truncated",
+                                   "tokens", "tps", "qa_score", "truncated",
                                    "tokens_estimated", "error", "output_url")}
             for r in (d.get("results") or [])]
     return json.dumps({"task": d.get("task_id"), "model_set": d.get("model_set"),

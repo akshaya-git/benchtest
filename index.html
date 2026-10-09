@@ -258,11 +258,11 @@
         <th title="Prompt processing — prefill tok/s (server-side where the framework provides it; client-side for raw)">PP tok/s</th>
         <th title="Token generation — decode tok/s (server-side where the framework provides it; client-side for raw)">TGS tok/s</th>
         <th title="Overall throughput — completion tokens / total wall time">TPS</th>
-        <th>Run time (s)</th><th>Iter</th><th>Tokens</th><th>Status</th><th>Artifacts</th>
+        <th>Run time (s)</th><th>Iter</th><th>Tokens</th><th title="Reliability QA — deterministic checks on the artifact (delivered, substantial, complete, self-test result, untruncated). Full breakdown in the cell detail.">QA</th><th>Status</th><th>Artifacts</th>
       </tr>
     </thead>
     <tbody id="resultsBody">
-      <tr><td colspan="12" style="color:var(--muted);text-align:center;padding:22px;">No results yet — pick harnesses &amp; a task and hit Run Benchmark.</td></tr>
+      <tr><td colspan="13" style="color:var(--muted);text-align:center;padding:22px;">No results yet — pick harnesses &amp; a task and hit Run Benchmark.</td></tr>
     </tbody>
   </table>
   </div>
@@ -711,6 +711,7 @@ function renderResults() {
       <td>${r.latency == null ? '…' : r.latency.toFixed(2)}</td>
       <td>${r.iterations == null ? '–' : r.iterations}</td>
       <td>${r.tokens == null ? '…' : r.tokens}</td>
+      <td title="${esc(r.qa_notes || '')}">${r.qa_score == null ? '–' : '<b style="color:' + (r.qa_score >= 80 ? 'var(--green)' : r.qa_score >= 50 ? 'var(--amber)' : 'var(--red)') + '">' + r.qa_score + '</b>'}</td>
       <td><a class="cell-link" onclick="showCellDetail(${i})" title="${r.error ? esc(r.error) : 'Click for detail'}"><span class="tag ${r.status}" title="${r.truncated ? 'Response hit the max_tokens cap and was cut off — output may be incomplete' : ''}">${r.status}${r.truncated ? ' ⚠' : ''}</span></a></td>
       <td>${r.output_url ? `<button class="mini" onclick="window.open('${r.output_url}','_blank')">Open ▸</button>` : (r.status === 'done' ? '<span style="color:var(--muted)">text</span>' : '')}</td>
     </tr>`;}).join('');
@@ -1165,6 +1166,7 @@ async function loadHistory() {
        <td>${x.latency == null ? '–' : x.latency + 's'}</td>
        <td>${x.iterations ?? '–'}</td>
        <td>${x.tokens ?? '–'}</td><td>${x.tps ?? '–'}</td>
+       <td title="${esc(x.qa_notes || '')}">${x.qa_score ?? '–'}</td>
        <td>${x.output_url ? `<a href="${x.output_url}" target="_blank" style="color:var(--accent)">open</a>` : '–'}</td></tr>`;
     }).join('');
     return `<details style="margin-bottom:10px">
@@ -1181,7 +1183,7 @@ async function loadHistory() {
       </div>
       <div style="overflow-x:auto;margin-top:6px">
       <table><thead><tr><th>Framework</th><th>Harness</th><th>Status</th><th>Run time</th><th>Iter</th>
-        <th>Tokens</th><th>TPS</th><th>Artifacts</th></tr></thead>
+        <th>Tokens</th><th>TPS</th><th>QA</th><th>Artifacts</th></tr></thead>
       <tbody>${rows}</tbody></table></div>
     </details>`;
   }).join('') || '<p style="color:var(--muted)">No saved runs yet.</p>';
