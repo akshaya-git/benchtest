@@ -118,7 +118,7 @@ probe that actually uses the produced page): `tetris`, `snake`, `pong`, `todo`,
 `fib`, `webdb` (single-file app over an embedded store), `bugfix` (fix 4 planted
 bugs, graded by the app's own self-test), `codereview` (find the planted defects
 in a sample module), `markdown`, `agentconsole` (chat → tool-calling agent with
-skills + MCP deploy), `logreport` (analyze the previous run's logs), plus
+skills + MCP deploy), `logreport` (analyze the previous run's logs), `execdash` (build an executive decision dashboard from recent run data), plus
 **✏️ Custom prompt** for anything else — its template documents what models can
 and cannot reach in this environment.
 

@@ -632,6 +632,9 @@ TASKS = [
         {"id": "agentconsole", "name": "LONG · Agent Console (chat → agent, skills, MCP deploy)", "long": True,
      "artifact": "index.html",
      "prompt": "Build a single-file 'Agent Console' — a chat UI that turns any OpenAI-compatible local endpoint into a tool-calling agent. Everything client-side, no libraries. Sections: (1) Connect: collapsible settings panel (base URL, e.g. http://localhost:7001/v1, optional API key), a Connect button that calls GET {base}/models, renders returned ids in a model dropdown, and shows a connected/error banner. (2) Chat: message list with user/assistant bubbles, markdown rendering for code and lists, timestamps, a 'clear conversation' button, and the last 20 exchanges persisted to localStorage and restored on reload. (3) Agent loop with tool calling: define exactly 4 built-in tools — http_get(url) for HTTP GET returning response text, http_post(url, body) for HTTP POST returning response text, now() for the current timestamp, and math_eval(expression) for safe arithmetic — and send them in the request's tools array using the OpenAI tool-calling protocol. When the model responds with tool_calls, execute each tool in JavaScript, append the results as role=tool messages, and re-request, looping until the model answers with plain content or 5 iterations. Render every tool call and its result as a collapsible block inside the transcript. (4) Skills: a Skills panel where the user loads a SKILL.md file via a file picker (or pastes one) — parse its YAML frontmatter into name and description, list loaded skills with enable/disable toggles, and prepend the body of every enabled skill to the system prompt of the next request. (5) MCP deploy: a Download MCP server button that generates a complete single-file Python MCP server (official mcp package, stdio transport, at least 3 tools wrapping the same HTTP helpers against the configured base URL) and downloads it as bench-mcp-server.py. (6) Self-test panel with a button that runs at least 5 checks and renders one line per check starting with a check mark or a cross, plus a final summary line in the exact form N/M passed: models endpoint reachable, chat completion returns content, a tool-call round-trip works (offer a math tool and ask the model to add 2 plus 2 via the tool), markdown rendering works, and SKILL.md frontmatter parsing works. Connection errors render as a readable error bubble. Return only the complete HTML."},
+        {"id": "execdash", "name": "Executive dashboard · framework decision report",
+     "artifact": "execdash.html",
+     "prompt": "Build a single-file executive dashboard (execdash.html) that an executive can read in two minutes to decide which local LLM serving framework to use for which kind of task. Base every statement ONLY on the benchmark data inlined below — no outside knowledge, no invented numbers.\n\nDATA (JSON):\n<data>\n@EXECDASH_DATA@\n</data>\n\nShape: models maps framework id to the model id it served; tasks[] holds one entry per benchmark task, each with cells[] for every framework/harness pair (status, latency_s, tps = overall tok/s, server_tgs = server-measured decode tok/s, server_pp, tokens, iterations, truncated, error).\n\nDeliver, all client-side in one file, no libraries, no network calls:\n\n(1) VERDICT banner — exactly three recommendations, each justified by at least three concrete numbers shown in the banner itself: fastest raw generation (framework + its raw tok/s), best agentic executor (framework + its server-measured decode tok/s and iterations), most reliable (framework + its done/total cell count).\n\n(2) DECISION MATRIX — one row per task, one column per framework. Each cell shows the framework's decode tok/s on that task (server_tgs for agent harnesses, tps for raw harnesses) and a letter grade A–D; highlight the best framework per row. A legend must define the grade thresholds explicitly.\n\n(3) OBJECTIVE SCORING MODEL — fully disclosed on the page. Per framework compute score = 0.45*speed + 0.35*reliability + 0.20*consistency, where speed = (median server_tgs across that framework's agent cells + median tps across its raw cells), normalized 0-100 against the best framework; reliability = 100 * done_cells / total_cells; consistency = 100 - normalized spread (max-min across the framework's per-task medians). Render the formula, the weights, and every input number on the page so any score can be recomputed by hand from the tables shown. Rank the frameworks by this score and say in one sentence what the ranking means practically.\n\n(4) RELIABILITY panel — per framework: error cells, timeouts, truncations, each naming the task and harness it happened on.\n\n(5) DETAIL table — every cell from the data, sortable by any column, status-colored, showing framework, harness, task, status, latency, tok/s, tokens, iterations, and error text where present.\n\n(6) CAVEATS section — state explicitly what this data does not show: iterations exist only for opencode/hart cells; client tps for agent harnesses includes tool-execution time; error cells are part of the record, not missing data; all numbers come from one machine and one model build per framework.\n\n(7) SELF-TEST panel with a button that runs at least 8 checks and renders one line per check starting with a check mark or a cross, plus a final summary line in the exact form N/M passed: total cell count matches the inlined data; every rendered score recomputes from the detail table values; column sorting works both directions; no NaN, undefined, or null text renders anywhere; every VERDICT number appears in the detail data; grade thresholds are applied identically in every row; every framework appears in the matrix and the scoring table; reliability counts match the RELIABILITY panel.\n\nDark, high-contrast, executive-readable design: big numbers, clear hierarchy, no clutter. Return only the complete HTML."},
 ]
 
 
@@ -728,6 +731,46 @@ def _build_logreport_fixture():
                     err_lines.append(line)
         with open(os.path.join(LOGREPORT_DIR, f"{fw}.log"), "w") as fh:
             fh.writelines(err_lines[-400:])
+
+
+def _execdash_inline(max_runs=11, cap=60000):
+    """Compact digest of the most recent runs, inlined into the execdash
+    prompt: per task × framework × harness status/latency/tok-s/tokens/
+    iterations/error — everything an executive dashboard needs, nothing
+    more (no artifacts, no narration)."""
+    import glob as _g
+    files = sorted(_g.glob(os.path.join(RUNS_DIR, "*.json")),
+                   key=os.path.getmtime, reverse=True)[:max_runs]
+    out = {"models": {}, "tasks": []}
+    for f in reversed(files):   # oldest first → task order matches campaign
+        try:
+            with open(f, encoding="utf-8") as fh:
+                d = json.load(fh)
+        except (OSError, json.JSONDecodeError):
+            continue
+        for fw, c in (d.get("frameworks") or {}).items():
+            out["models"].setdefault(fw, c.get("model"))
+        cells = []
+        for r in (d.get("results") or []):
+            cells.append({
+                "framework": r.get("framework"), "harness": r.get("harness"),
+                "status": r.get("status"),
+                "latency_s": r.get("latency"), "tps": r.get("tps"),
+                "server_tgs": r.get("server_tgs"), "server_pp": r.get("server_pp"),
+                "tokens": r.get("tokens"),
+                "tokens_source": r.get("tokens_source"),
+                "iterations": r.get("iterations"),
+                "truncated": bool(r.get("truncated")),
+                "error": (r.get("error") or "")[:100] or None})
+        out["tasks"].append({"task_id": d.get("task_id"),
+                             "task_name": d.get("task_name"),
+                             "cells": cells})
+    body = json.dumps(out, separators=(",", ":"))
+    if len(body) > cap:   # drop the oldest tasks until it fits
+        while len(body) > cap and len(out["tasks"]) > 1:
+            out["tasks"].pop(0)
+            body = json.dumps(out, separators=(",", ":"))
+    return body
 
 
 def _logreport_inline():
@@ -3142,6 +3185,8 @@ def run_benchmark(req):
     if task_id == "logreport":
         _build_logreport_fixture()
         prompt = prompt.replace("@LOGREPORT_INLINE@", _logreport_inline())
+    elif task_id == "execdash":
+        prompt = prompt.replace("@EXECDASH_DATA@", _execdash_inline())
     elif task_id in ("bugfix", "codereview"):
         # inline the fixture source; if the user edited the prompt and removed
         # the placeholder, append it anyway so the model always sees the code
