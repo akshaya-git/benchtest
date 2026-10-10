@@ -21,6 +21,18 @@ Options: expose `--stream-stall-deadline-s` per task class in the mtplx
 start_cmd, or document the interaction in the results. The qwen dataset
 keeps those two cells as honest errors.
 
+## 5. Agent-loop KV working set is not modeled by the fit gate
+
+Real incident (2026-10-10, kernel panic `watchdog timeout: no checkins
+from watchdogd in 91 seconds`): MLX-VLM ran a 51.8 GB bf16 model — well
+within the fit gate — but markdown × pi drove two interleaved ~58k-token
+sessions whose KV caches, stacked on the weights, swap-stormed a 128 GB
+machine into a hard panic. need_gb = weights × 1.1 + 2 models weights
+only. Fix direction: budget KV for the configured context (ctx × per-token
+KV bytes) into need_gb, or cap agent-session context (MLX-VLM ctx_tokens
+65536 halves the exposure). Interim: documented here; users can lower
+ctx_tokens per framework.
+
 ## 3. Config/state split (post-release)
 
 `config.json` still persists the full merged tree (notes, start commands,
