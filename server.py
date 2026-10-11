@@ -2206,6 +2206,8 @@ def finalize_harness_stream(harness, out):
         parsed_any = True
         t = ev.get("type", "")
         if harness == "pi":
+            if t == "step_finish":
+                steps += 1   # one per model round — the iterations column
             if t == "agent_end":
                 for m in ev.get("messages", []):
                     if m.get("role") == "assistant":
@@ -2656,6 +2658,8 @@ def run_harness(fw, harness, task_name, prompt, settings, task=None):
                    "--openai-api-base", agent_base_url(fw),
                    "--openai-api-key", "bench",
                    "--edit-format", "whole",
+                   "--llm-history-file", os.path.join(
+                       workdir, ".aider-llm-history.jsonl"),
                    "--message", prompt,
                    "--yes-always", "--no-auto-commits", "--no-git",
                    "--no-check-update", "--no-show-release-notes",
@@ -2738,6 +2742,13 @@ def run_harness(fw, harness, task_name, prompt, settings, task=None):
             if harness in ("pi", "opencode"):
                 out, exact_tokens, ev_metrics = finalize_harness_stream(harness, out)
                 metrics.update(ev_metrics)
+            if harness == "aider" and workdir:
+                hist = os.path.join(workdir, ".aider-llm-history.jsonl")
+                if os.path.isfile(hist):
+                    n = sum(1 for _ in open(hist, encoding="utf-8",
+                                            errors="replace"))
+                    if n:
+                        metrics["calls"] = n   # exact model-call count
             text = out
             # Model-side timing measured by the proxy across all the
             # agent's calls (the CLIs don't expose timing internals).
