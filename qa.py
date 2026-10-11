@@ -14,9 +14,10 @@ Score components (100 max):
   20  substantial   — size in a plausible range for a working app/report
   20  complete      — HTML closes (</html> present near the end); text
                       artifacts pass when long enough to be whole
-  30  self-test     — "N/M passed" line: M * passed/M; 10 (partial) when the
-                      artifact carries no self-test line, so tasks without
-                      one top out at 80 rather than being penalized blindly
+  30  self-test     — "N/M passed" line: 30 * passed/M. Artifacts WITHOUT a
+                      self-test line are normalized over the remaining 70
+                      points, so a clean no-self-test artifact scores 100
+                      and problems still visibly dent the score
   10  untruncated   — the cell did not hit the token cap
 """
 import os
@@ -69,10 +70,14 @@ def evaluate(row, artifact_path=None):
                 "qa_notes": "cell error: " + (row.get("error") or "unknown")[:90]}
 
     delivered, substantial, complete = _artifact_checks(artifact_path, notes)
-    score = 20 * delivered + 20 * substantial + 20 * complete
+    earned = 20 * delivered + 20 * substantial + 20 * complete
+    untruncated = 0 if row.get("truncated") else 10
+    earned += untruncated
+    notes.append("untruncated (+10)" if untruncated else
+                 "truncated: reply hit the token cap (+0)")
 
-    self_test = 0
-    st_note = "self-test: no N/M passed line (+10 partial)"
+    self_test = None
+    st_note = ""
     if artifact_path and os.path.isfile(artifact_path):
         try:
             with open(artifact_path, encoding="utf-8", errors="replace") as f:
@@ -85,15 +90,18 @@ def evaluate(row, artifact_path=None):
             if total > 0:
                 self_test = round(30 * passed / total)
                 st_note = f"self-test: {passed}/{total} passed (+{self_test})"
+                notes.append(st_note)
+                earned += self_test
+                score = min(earned, 100)
             else:
-                st_note = "self-test: 0/0 passed line is malformed (+0)"
-    score += self_test if self_test else 10
-    notes.append(st_note)
-
-    if row.get("truncated"):
-        notes.append("truncated: reply hit the token cap (+0)")
+                st_note = "self-test: 0/0 passed line is malformed"
+                notes.append(st_note)
+                score = round(earned / 70 * 100)
+        else:
+            st_note = "self-test: no N/M passed line — normalized over 70"
+            notes.append(st_note)
+            score = round(earned / 70 * 100)
     else:
-        score += 10
-        notes.append("untruncated (+10)")
+        score = round(earned / 70 * 100)
 
     return {"qa_score": min(score, 100), "qa_notes": "; ".join(notes)}

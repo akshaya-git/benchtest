@@ -237,7 +237,7 @@ class TestQa(unittest.TestCase):
         with _t.TemporaryDirectory() as d:
             p = self._html(d, "<!DOCTYPE html><html><body>" + "x" * 6000)
             r = qa.evaluate({"status": "done", "truncated": True}, p)
-        self.assertLessEqual(r["qa_score"], 70)
+        self.assertEqual(r["qa_score"], 57)   # 40 earned / 70 normalized
         self.assertTrue(any("cut off" in n for n in r["qa_notes"].split("; ")))
 
     def test_missing_artifact_scores_zero_delivery(self):
@@ -250,12 +250,14 @@ class TestQa(unittest.TestCase):
         self.assertEqual(r["qa_score"], 0)
         self.assertIn("timeout", r["qa_notes"])
 
-    def test_text_artifact_without_selftest_partial_credit(self):
+    def test_text_artifact_without_selftest_normalizes_to_full(self):
         import tempfile as _t
         with _t.TemporaryDirectory() as d:
             p = self._html(d, "# Report\n\n" + "word " * 500, "report.md")
             r = qa.evaluate({"status": "done"}, p)
-        self.assertEqual(r["qa_score"], 80)   # 20+20+20 + 10 partial + 10
+        # clean artifact without a self-test line: 70 earned / 70 → 100
+        self.assertEqual(r["qa_score"], 100)
+        self.assertIn("normalized over 70", r["qa_notes"])
 
 
 class TestMigrateMlxlm(unittest.TestCase):

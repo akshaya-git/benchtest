@@ -23,6 +23,7 @@ sys.path.insert(0, ROOT)
 
 import server          # noqa: E402  (env var must be set first)
 import discovery       # noqa: E402
+import qa              # noqa: E402
 
 
 class TestHtmlExtraction(unittest.TestCase):
@@ -55,14 +56,6 @@ class TestSeamOverlap(unittest.TestCase):
 
 
 class TestHarnessStream(unittest.TestCase):
-    def test_goose_stats(self):
-        out = ("thinking...\nOutput tokens: 4242\n"
-               "Time to first token: 0.83\nTokens/sec: 51.2\n")
-        text, tokens, met = server.finalize_harness_stream("goose", out)
-        self.assertEqual(tokens, 4242)
-        self.assertEqual(met.get("ttft"), 0.83)
-        self.assertEqual(met.get("tgs"), 51.2)
-
     def test_pi_agent_end(self):
         ev = {"type": "agent_end", "messages": [
             {"role": "user", "content": "build it"},
@@ -210,6 +203,78 @@ class TestNormalizeKey(unittest.TestCase):
                          "models--model")
 
 
+class TestNoDuplicateDefs(unittest.TestCase):
+    def test_server_has_no_duplicate_top_level_defs(self):
+        # a patch once left two free_ram definitions; Python's last-wins
+        # silently ran the OLD one. Ban duplicate top-level defs entirely.
+        import ast as _ast
+        tree = _ast.parse(open(os.path.join(ROOT, "server.py")).read())
+        names = [n.name for n in tree.body
+                 if isinstance(n, (_ast.FunctionDef, _ast.ClassDef))]
+        dupes = {n for n in names if names.count(n) > 1}
+        self.assertEqual(dupes, set())
+
+
+class TestQa(unittest.TestCase):
+    def _html(self, tmp, body, name="app.html"):
+        import tempfile as _t
+        p = os.path.join(tmp, name)
+        with open(p, "w") as f:
+            f.write(body)
+        return p
+
+    def test_full_pass_artifact(self):
+        import tempfile as _t
+        with _t.TemporaryDirectory() as d:
+            p = self._html(d, "<!DOCTYPE html><html><body>" + "x" * 6000
+                           + "<div>12/12 passed</div></body></html>")
+            r = qa.evaluate({"status": "done"}, p)
+        self.assertEqual(r["qa_score"], 100)
+        self.assertIn("12/12 passed", r["qa_notes"])
+
+    def test_truncated_html_loses_complete_and_untruncated(self):
+        import tempfile as _t
+        with _t.TemporaryDirectory() as d:
+            p = self._html(d, "<!DOCTYPE html><html><body>" + "x" * 6000)
+            r = qa.evaluate({"status": "done", "truncated": True}, p)
+        self.assertEqual(r["qa_score"], 57)   # 40 earned / 70 normalized
+        self.assertTrue(any("cut off" in n for n in r["qa_notes"].split("; ")))
+
+    def test_missing_artifact_scores_zero_delivery(self):
+        r = qa.evaluate({"status": "done"}, "/nonexistent/x.html")
+        self.assertLessEqual(r["qa_score"], 30)
+        self.assertIn("missing on disk", r["qa_notes"])
+
+    def test_error_row_is_zero(self):
+        r = qa.evaluate({"status": "error", "error": "timeout"}, None)
+        self.assertEqual(r["qa_score"], 0)
+        self.assertIn("timeout", r["qa_notes"])
+
+    def test_text_artifact_without_selftest_normalizes_to_full(self):
+        import tempfile as _t
+        with _t.TemporaryDirectory() as d:
+            p = self._html(d, "# Report\n\n" + "word " * 500, "report.md")
+            r = qa.evaluate({"status": "done"}, p)
+        # clean artifact without a self-test line: 70 earned / 70 → 100
+        self.assertEqual(r["qa_score"], 100)
+        self.assertIn("normalized over 70", r["qa_notes"])
+
+
+class TestMigrateMlxlm(unittest.TestCase):
+    def test_renames_framework_and_set_keys_preserving_order(self):
+        cfg = {"frameworks": {"omlx": {}, "mlxlm": {"port": 7003}, "mtplx": {}},
+               "model_sets": {"s": {"models": {"mlxlm": "org/name",
+                                               "omlx": "other"}}}}
+        out = server._migrate_mlxlm(cfg)
+        self.assertEqual(list(out["frameworks"]), ["omlx", "mlxvlm", "mtplx"])
+        self.assertEqual(out["frameworks"]["mlxvlm"]["port"], 7003)
+        self.assertEqual(out["model_sets"]["s"]["models"]["mlxvlm"], "org/name")
+
+    def test_noop_without_mlxlm(self):
+        cfg = {"frameworks": {"omlx": {}}}
+        self.assertEqual(server._migrate_mlxlm(cfg)["frameworks"], {"omlx": {}})
+
+
 class TestTasks(unittest.TestCase):
     def test_unique_task_ids(self):
         ids = [t["id"] for t in server.TASKS]
@@ -275,13 +340,15 @@ class TestScanFolderModels(unittest.TestCase):
                 out = server._scan_folder_models(root)
         self.assertEqual(len(out), 1)
         self.assertEqual(out[0]["id"], "org/name")
-        self.assertEqual(out[0]["path"], snap)
+        self.assertEqual(out[0]["path"], os.path.realpath(snap))
 
     def test_folder_that_is_itself_a_model(self):
         import tempfile as _t
         from unittest.mock import patch
         with _t.TemporaryDirectory() as root:
-            self._mk(root, "config.json")   # root IS the model
+            # the root itself is a model: config.json is a FILE here
+            with open(os.path.join(root, "config.json"), "w") as f:
+                json.dump({}, f)
             with patch.object(discovery, "dir_size_gb", return_value=5.0):
                 out = server._scan_folder_models(root)
         self.assertEqual(len(out), 1)

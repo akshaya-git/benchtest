@@ -397,7 +397,7 @@ async function loadFrameworks() {
   $('fwCards').innerHTML = Object.entries(all).map(([fw, f]) => `
     <div class="fw-card" id="fwcard-${fw}" style="cursor:pointer" onclick="showFramework('${fw}')">
       <div class="fw-name"><span class="dot down" id="dot-${fw}"></span>${esc(f.name)} <span class="fw-port">port ${f.port}</span></div>
-      <div class="fw-model" id="fwmodel-${fw}" title="${esc(f.model)}">${esc(f.model)}</div>
+      <div class="fw-model" id="fwmodel-${fw}" title="${esc(f.model_display || f.model)}">${esc(f.model_display || f.model)}</div>
     </div>`).join('');
 
   // model-set checkbox sync (campaign tab; active_set may be a
@@ -946,7 +946,7 @@ async function loadFolder(fw, quiet) {
   }
   models.sort((a, b) => (a.size_gb || 0) - (b.size_gb || 0));
   const f = FRAMEWORKS[fw] || {};
-  const cur = f.model || '';
+  const cur = f.model_display || f.model || '';
   if (cur && f.model_available !== false && !models.some(m => m.id === cur))
     models.unshift({ id: cur, size_gb: null });
   sel.innerHTML = '<option value="">— off —</option>' + models.map(m =>
@@ -1005,7 +1005,7 @@ function selectedFws() {
 function renderSetInfoLine() {
   const on = Object.values(FRAMEWORKS).filter(f => f.model_available !== false);
   document.getElementById('modelSetInfo').innerHTML =
-    on.length ? on.map(f => esc(f.name) + ': ' + esc(f.model)).join('<br>')
+    on.length ? on.map(f => esc(f.name) + ': ' + esc(f.model_display || f.model)).join('<br>')
               : '<span style="color:var(--red)">no model selected</span>';
 }
 

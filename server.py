@@ -1401,6 +1401,20 @@ def start_proxy():
 # ----------------------------------------------------------------------------
 # Framework lifecycle
 # ----------------------------------------------------------------------------
+def _model_display(cfg):
+    """Human-readable model name for the dashboard. MLX-Serve adopts its
+    snapshot-hash id as the served model (that is what requests must use);
+    resolve the hash back to its HF-cache repo (org/name) for display."""
+    m = cfg.get("model") or ""
+    if not m or "/" in m or m.startswith("models--"):
+        return m
+    for d in glob.glob(os.path.join(discovery.HF_CACHE,
+                                    "models--*", "snapshots", m)):
+        repo = os.path.basename(os.path.dirname(os.path.dirname(d)))
+        return repo[len("models--"):].replace("--", "/")
+    return m
+
+
 def _adopt_served_model_id(fw, retries=10, delay=2.0):
     """Align cfg['model'] with the id the server actually serves. Frameworks
     like OMLX serve cache-style ids (org--name) while the config/picker use
@@ -3757,6 +3771,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._json({"ok": True, "set": CONFIG["model_set"],
                             "frameworks": {fw: {"name": c.get("name", fw),
                                                 "model": c.get("model"),
+                                 "model_display": _model_display(c),
                                                 "model_available": c.get("model_available", True)}
                                            for fw, c in FRAMEWORKS.items()}})
                 return
