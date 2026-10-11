@@ -47,6 +47,7 @@ check_cli omlx      "brew install omlx  (or see the OMLX repo)"
 check_cli mtplx     "see the MTPLX repo for install"
 check_cli mlx-serve "npm i -g mlx-serve  (or the MLX-Serve repo)"
 check_cli vllm      "pip install vllm  (dev 0.31 for Apple Silicon — optional framework)"
+check_cli aider     "python3 -m pip install aider-chat  (aider.chat)"
 
 # MLX-VLM needs a python interpreter with the mlx_vlm package.
 if "$PY" -c 'import mlx_vlm' >/dev/null 2>&1; then

@@ -1,6 +1,6 @@
 ---
 name: benchtest-operator
-description: Operate, monitor and debug the benchtest local-LLM benchmark (Apple Silicon; OMLX/MTPLX/MLX-VLM/MLX-Serve/vLLM × raw/raw+/pi/opencode/hart). Use when the user asks to run, monitor, compare or debug benchmark runs, or when benchmark artifacts or logs need triage.
+description: Operate, monitor and debug the benchtest local-LLM benchmark (Apple Silicon; OMLX/MTPLX/MLX-VLM/MLX-Serve/vLLM × raw/raw+/pi/opencode/Aider/hart). Use when the user asks to run, monitor, compare or debug benchmark runs, or when benchmark artifacts or logs need triage.
 ---
 
 # benchtest operator

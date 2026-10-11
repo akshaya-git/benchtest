@@ -163,7 +163,7 @@ DEFAULT_FRAMEWORKS = {
         "notes": "vLLM (dev 0.31) on macOS serves standard HF repos — NOT MLX builds, and Qwen MTP variants are unsupported upstream so far. Edit start_cmd flags to match your build. Metrics come from the vLLM Prometheus /metrics surface.",
         "port": 7005,
         "model": "",
-        "model_gb": 0, "ctx_tokens": 131072,
+        "model_gb": 0, "ctx_tokens": 131072, "max_tokens": 65536,
         "start_cmd": ["vllm", "serve", "{model}", "--host", "127.0.0.1",
                       "--port", "7005", "--max-model-len", "{ctx}"],
     },
@@ -647,6 +647,7 @@ HARNESS_LABELS = {
     "rawplus": "raw+",
     "pi": "pi",
     "opencode": "opencode",
+    "aider": "Aider",
     "hart": "hart",
 }
 
@@ -2632,6 +2633,17 @@ def run_harness(fw, harness, task_name, prompt, settings, task=None):
                    "--format", "json",
                    "--model", f"bench/{cfg['model']}", prompt]
             env = dict(os.environ, XDG_CONFIG_HOME=prep_opencode(fw))
+        elif harness == "aider":
+            # aider edits files in its CWD — the generic workdir + per-cell
+            # fixture copy below covers it (same flow as pi)
+            cmd = ["aider", "--model", cfg["model"],
+                   "--openai-api-base", agent_base_url(fw),
+                   "--openai-api-key", "bench",
+                   "--message", prompt,
+                   "--yes-always", "--no-auto-commits", "--no-git",
+                   "--no-check-update", "--no-show-release-notes",
+                   "--analytics-disable"]
+            env = dict(os.environ)
         elif harness == "hart":
             if not os.path.isfile(HART_PATH):
                 return {"status": "error", "latency": 0, "tokens": 0, "tps": 0.0,
@@ -2681,9 +2693,9 @@ def run_harness(fw, harness, task_name, prompt, settings, task=None):
             t0 = time.monotonic()
 
             def _line_handler(line):
-                # JSON event streams (pi/opencode) render as compact lines
-                # render as compact semantic activity lines; other plain text
-                # (hart) passes through. Delta-class events return None and
+                # JSON event streams (pi/opencode) render as compact semantic
+                # activity lines; other plain text (hart, aider) passes
+                # through. Delta-class events return None and
                 # are skipped so the feed stays readable.
                 rendered = harness_stream_format(line, harness)
                 if rendered is None:
