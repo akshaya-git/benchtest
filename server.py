@@ -2206,8 +2206,9 @@ def finalize_harness_stream(harness, out):
         parsed_any = True
         t = ev.get("type", "")
         if harness == "pi":
-            if t == "step_finish":
-                steps += 1   # one per model round — the iterations column
+            if t == "message_end" and \
+                    (ev.get("message") or {}).get("role") == "assistant":
+                steps += 1   # one per completed model response — iterations
             if t == "agent_end":
                 for m in ev.get("messages", []):
                     if m.get("role") == "assistant":
@@ -2748,10 +2749,12 @@ def run_harness(fw, harness, task_name, prompt, settings, task=None):
             if harness == "aider" and workdir:
                 hist = os.path.join(workdir, ".aider-llm-history.jsonl")
                 if os.path.isfile(hist):
-                    n = sum(1 for _ in open(hist, encoding="utf-8",
-                                            errors="replace"))
+                    # text transcript: one "TO LLM <ts>" block per request
+                    n = sum(1 for line in open(hist, encoding="utf-8",
+                                               errors="replace")
+                            if line.startswith("TO LLM "))
                     if n:
-                        metrics["calls"] = n   # exact model-call count
+                        metrics["calls"] = n   # exact model-request count
             text = out
             # Model-side timing measured by the proxy across all the
             # agent's calls (the CLIs don't expose timing internals).

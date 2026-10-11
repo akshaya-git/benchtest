@@ -56,6 +56,21 @@ class TestSeamOverlap(unittest.TestCase):
 
 
 class TestHarnessStream(unittest.TestCase):
+    def test_pi_iterations_count_assistant_messages(self):
+        events = "\n".join([
+            json.dumps({"type": "message_start"}),
+            json.dumps({"type": "message_end", "message": {"role": "user"}}),
+            json.dumps({"type": "message_end",
+                        "message": {"role": "assistant", "content": []}}),
+            json.dumps({"type": "message_end",
+                        "message": {"role": "assistant", "content": []}}),
+            json.dumps({"type": "agent_end", "messages": [
+                {"role": "assistant", "content": [{"type": "text", "text": "ok"}],
+                 "usage": {"input": 10, "output": 2}}]}),
+        ])
+        text, tokens, met = server.finalize_harness_stream("pi", events)
+        self.assertEqual(met.get("calls"), 2)   # assistant responses only
+
     def test_pi_agent_end(self):
         ev = {"type": "agent_end", "messages": [
             {"role": "user", "content": "build it"},
