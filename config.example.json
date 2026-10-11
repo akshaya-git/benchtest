@@ -140,7 +140,7 @@
     "vllm": {
       "name": "vLLM",
       "model_source": "hf",
-      "notes": "vLLM (dev 0.31) on macOS serves standard HF repos \u2014 NOT MLX builds, and Qwen MTP variants are unsupported upstream so far. Edit start_cmd flags to match your build.",
+      "notes": "vLLM (dev 0.31, vllm-metal) on macOS serves standard HF repos \u2014 NOT MLX builds; Qwen MTP unsupported upstream so far. Reference model: google/gemma-4-31B-it. --enable-auto-tool-choice + --tool-call-parser gemma4 are REQUIRED: pi/opencode send tool_choice=auto and vLLM 400s without them (observed as empty-response/no-output rows).",
       "port": 7005,
       "model": "",
       "model_gb": 0,
@@ -154,7 +154,10 @@
         "--port",
         "7005",
         "--max-model-len",
-        "{ctx}"
+        "{ctx}",
+        "--enable-auto-tool-choice",
+        "--tool-call-parser",
+        "gemma4"
       ]
     }
   },
