@@ -136,6 +136,26 @@
           "16384"
         ]
       }
+    },
+    "vllm": {
+      "name": "vLLM",
+      "model_source": "hf",
+      "notes": "vLLM (dev 0.31) on macOS serves standard HF repos \u2014 NOT MLX builds, and Qwen MTP variants are unsupported upstream so far. Edit start_cmd flags to match your build.",
+      "port": 7005,
+      "model": "",
+      "model_gb": 0,
+      "ctx_tokens": 131072,
+      "start_cmd": [
+        "vllm",
+        "serve",
+        "{model}",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "7005",
+        "--max-model-len",
+        "{ctx}"
+      ]
     }
   },
   "model_set": "flash-next",

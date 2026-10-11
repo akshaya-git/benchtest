@@ -193,7 +193,7 @@ def framework_log(framework: str, lines: int = 60, only_errors: bool = True) -> 
 def start_campaign(sets: list[str], harnesses: list[str] | None = None) -> str:
     """MUTATES STATE: start a benchmark campaign over whole tasks — sets is a
     list of model-set names ('qwen38-27b', 'flash-next'), harnesses defaults
-    to all six (raw, rawplus, pi, opencode, goose, hart). Refuses if a run
+    to all five (raw, rawplus, pi, opencode, hart). Refuses if a run
     or campaign is already active."""
     return json.dumps(_post("/api/campaign",
                             {"action": "start", "mode": "all", "sets": sets,

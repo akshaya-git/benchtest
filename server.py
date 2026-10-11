@@ -157,6 +157,16 @@ DEFAULT_FRAMEWORKS = {
                       "--port", "7004", "--ctx-size", "131072",
                       "--max-tokens", "65536", "{reasoning}"],
     },
+    "vllm": {
+        "name": "vLLM",
+        "model_source": "hf",
+        "notes": "vLLM (dev 0.31) on macOS serves standard HF repos — NOT MLX builds, and Qwen MTP variants are unsupported upstream so far. Edit start_cmd flags to match your build. Metrics come from the vLLM Prometheus /metrics surface.",
+        "port": 7005,
+        "model": "",
+        "model_gb": 0, "ctx_tokens": 131072,
+        "start_cmd": ["vllm", "serve", "{model}", "--host", "127.0.0.1",
+                      "--port", "7005", "--max-model-len", "{ctx}"],
+    },
 }
 
 DEFAULT_CONFIG = {
@@ -598,30 +608,8 @@ def resolve_start_cmd(fw_cfg, reasoning_level=None):
 
 # 5 benchmark tasks — prompts that produce runnable/inspectable output.
 TASKS = [
-    {"id": "logreport", "name": "Log Analyst · failure report", "artifact": "report.html",
-     "static_report": True,
-     "prompt": "You are given the logs of a PREVIOUS benchmark run that tested local LLM inference frameworks (OMLX, MTPLX, MLX-VLM, MLX-Serve) across agent harnesses (raw, raw+, pi, opencode, Goose, hart). The input files are in the directory "
-               + WORK_DIR + "/logreport-fixture/ — read them: runs.json (per-cell records: framework, harness, status, latency, error), errors.log (the orchestrator's failure lines), bench-excerpt.log (its full log window) and omlx.log / mtplx.log / mlxvlm.log / mlxserve.log (framework server error excerpts). The same runs.json and errors.log content is also inlined below between <input> markers.\n\n"
-               "Do exactly three things:\n"
-               "1. Classify every cell in runs.json as passed (status \"done\") or failed (any other status).\n"
-               "2. For each failed cell, find its root cause: match its framework and harness against errors.log / bench-excerpt.log and quote the single most relevant log line. Known failure classes in these logs: \"empty response\", \"timeout after 7200s\", \"no output\", \"stopped by user\", stream-stall breaks, memory-guard rejections.\n"
-               "3. Write a single-file HTML report named report.html in the current directory containing, in this order: (a) a header with the analyzed run's task name and date; (b) the totals — cells run, passed, failed, and the success rate as a percentage; (c) one summary table row per framework with cells run, passed, failed and failure rate; (d) one detail card per failed cell with its framework, harness, the exact error string and the quoted log line; (e) a \"Recommendations\" section with at most three concrete next actions.\n\n"
-               "Constraints: no external assets, no JavaScript frameworks, everything inline in one file. Return only the complete report.html.\n\n<input>\n@LOGREPORT_INLINE@\n</input>"},
     {"id": "tetris", "name": "HTML Tetris game", "artifact": "tetris.html",
      "prompt": "Create a complete, playable Tetris game in a single HTML file with embedded CSS and JavaScript. Include score, level, next-piece preview, and keyboard controls. Return only the full HTML file in one ```html code block."},
-    {"id": "snake", "name": "HTML Snake game", "artifact": "snake.html",
-     "prompt": "Create a complete, playable Snake game in a single HTML file with embedded CSS and JavaScript. Include score display, increasing speed, and arrow-key controls. Return only the full HTML file in one ```html code block."},
-    {"id": "pong", "name": "HTML Pong vs AI", "artifact": "pong.html",
-     "prompt": "Create a complete Pong game in a single HTML file where the player plays against a simple AI paddle. Include score display and mouse/keyboard control. Return only the full HTML file in one ```html code block."},
-    {"id": "todo", "name": "Todo app (localStorage)", "artifact": "todo.html",
-     "prompt": "Create a complete Todo list web app in a single HTML file with embedded CSS and JavaScript. Support adding, completing, deleting items and persisting to localStorage. Return only the full HTML file in one ```html code block."},
-    {"id": "fib", "name": "Explain + code: Fibonacci",
-     "prompt": "Explain memoized Fibonacci in plain English, then give a working Python implementation with a quick test snippet. Keep it under 300 words of explanation."},
-    # ---- long-horizon tasks (60-120 min class; industry benchmark families) ----
-    {"id": "webdb", "name": "Inventory manager · embedded DB + dashboard", "artifact": "inventory.html",
-     "prompt": "Build a single-file Inventory Manager web app backed by an embedded database: a pure-JavaScript data-store object exposing add(), update(), remove(), getAll() and query() operations, persisted to localStorage on every change and reloaded on start (no server, no libraries, no IndexedDB). Features: (1) on first load, seed the store with 12 products across exactly 3 categories (Food, Travel, Office — fields: id, name, category, quantity, price); (2) add a product via a form, edit a product inline, and delete a product, all persisted; (3) live search by product name and a category filter dropdown, both combinable; (4) a dashboard showing total product count, total inventory value (sum of quantity × price) and a low-stock count (quantity < 5); (5) a self-test panel with a button that runs at least 8 automated checks synchronously against the real data store — seed count = 12, add, read-back, update, delete, low-stock computation, persistence round-trip through localStorage, and query filtering — rendering one line per check starting with ✓ or ✗ and a final summary line in the exact form 'N/M passed'. Keep everything inline in one file. Return only the complete HTML."},
-    {"id": "bugfix", "name": "Agentic bugfix · fix the broken expense tracker", "artifact": "expenses.html",
-     "prompt": "The file expenses.html in your current directory is an expense tracker with a built-in self-test panel, but it contains exactly 4 planted bugs and its self-test currently reports failures. Diagnose each failure from the self-test output and the code, then fix the underlying bugs with minimal, targeted edits. The bugs are in the app logic (a totals computation, deletion, category filtering, and data persistence) — do NOT modify the self-test code, do NOT rewrite the app from scratch, and keep every existing feature working. The file must remain a single self-contained HTML file. When every self-test check passes, deliver the fixed file as expenses.html. The full current source is also inlined below between <source> markers.\n\n<source>\n@BUGFIX_SOURCE@\n</source>"},
     {"id": "codereview", "name": "Code review · find the planted defects", "artifact": "review.md",
      "prompt": "You are given the Python module review-sample.py — its full source is inlined below between <source> markers (agent harnesses also have it in the working directory). Review it like a senior engineer: find every real defect (there are at least 5; look carefully at query construction, function signatures, exception handling, slicing, resource handling, and shared state). Do exactly three things:\n"
                "1. For each defect found: assign a severity (critical, major, or minor), name the function it is in, describe what is wrong and when it bites, and give a concrete one-paragraph fix.\n"
@@ -633,9 +621,6 @@ TASKS = [
         {"id": "agentconsole", "name": "LONG · Agent Console (chat → agent, skills, MCP deploy)", "long": True,
      "artifact": "index.html",
      "prompt": "Build a single-file 'Agent Console' — a chat UI that turns any OpenAI-compatible local endpoint into a tool-calling agent. Everything client-side, no libraries. Sections: (1) Connect: collapsible settings panel (base URL, e.g. http://localhost:7001/v1, optional API key), a Connect button that calls GET {base}/models, renders returned ids in a model dropdown, and shows a connected/error banner. (2) Chat: message list with user/assistant bubbles, markdown rendering for code and lists, timestamps, a 'clear conversation' button, and the last 20 exchanges persisted to localStorage and restored on reload. (3) Agent loop with tool calling: define exactly 4 built-in tools — http_get(url) for HTTP GET returning response text, http_post(url, body) for HTTP POST returning response text, now() for the current timestamp, and math_eval(expression) for safe arithmetic — and send them in the request's tools array using the OpenAI tool-calling protocol. When the model responds with tool_calls, execute each tool in JavaScript, append the results as role=tool messages, and re-request, looping until the model answers with plain content or 5 iterations. Render every tool call and its result as a collapsible block inside the transcript. (4) Skills: a Skills panel where the user loads a SKILL.md file via a file picker (or pastes one) — parse its YAML frontmatter into name and description, list loaded skills with enable/disable toggles, and prepend the body of every enabled skill to the system prompt of the next request. (5) MCP deploy: a Download MCP server button that generates a complete single-file Python MCP server (official mcp package, stdio transport, at least 3 tools wrapping the same HTTP helpers against the configured base URL) and downloads it as bench-mcp-server.py. (6) Self-test panel with a button that runs at least 5 checks and renders one line per check starting with a check mark or a cross, plus a final summary line in the exact form N/M passed: models endpoint reachable, chat completion returns content, a tool-call round-trip works (offer a math tool and ask the model to add 2 plus 2 via the tool), markdown rendering works, and SKILL.md frontmatter parsing works. Connection errors render as a readable error bubble. Return only the complete HTML."},
-        {"id": "execdash", "name": "Executive dashboard · framework decision report",
-     "artifact": "execdash.html",
-     "prompt": "Build a single-file executive dashboard (execdash.html) that an executive can read in two minutes to decide which local LLM serving framework to use for which kind of task. Base every statement ONLY on the benchmark data inlined below — no outside knowledge, no invented numbers.\n\nDATA (JSON):\n<data>\n@EXECDASH_DATA@\n</data>\n\nShape: models maps framework id to the model id it served; tasks[] holds one entry per benchmark task, each with cells[] for every framework/harness pair (status, latency_s, tps = overall tok/s, server_tgs = server-measured decode tok/s, server_pp, tokens, iterations, truncated, error).\n\nDeliver, all client-side in one file, no libraries, no network calls:\n\n(1) VERDICT banner — exactly three recommendations, each justified by at least three concrete numbers shown in the banner itself: fastest raw generation (framework + its raw tok/s), best agentic executor (framework + its server-measured decode tok/s and iterations), most reliable (framework + its done/total cell count).\n\n(2) DECISION MATRIX — one row per task, one column per framework. Each cell shows the framework's decode tok/s on that task (server_tgs for agent harnesses, tps for raw harnesses) and a letter grade A–D; highlight the best framework per row. A legend must define the grade thresholds explicitly.\n\n(3) OBJECTIVE SCORING MODEL — fully disclosed on the page. Per framework compute score = 0.45*speed + 0.35*reliability + 0.20*consistency, where speed = (median server_tgs across that framework's agent cells + median tps across its raw cells), normalized 0-100 against the best framework; reliability = 100 * done_cells / total_cells; consistency = 100 - normalized spread (max-min across the framework's per-task medians). Render the formula, the weights, and every input number on the page so any score can be recomputed by hand from the tables shown. Rank the frameworks by this score and say in one sentence what the ranking means practically.\n\n(4) RELIABILITY panel — per framework: error cells, timeouts, truncations, each naming the task and harness it happened on.\n\n(5) DETAIL table — every cell from the data, sortable by any column, status-colored, showing framework, harness, task, status, latency, tok/s, tokens, iterations, and error text where present.\n\n(6) CAVEATS section — state explicitly what this data does not show: iterations exist only for opencode/hart cells; client tps for agent harnesses includes tool-execution time; error cells are part of the record, not missing data; all numbers come from one machine and one model build per framework.\n\n(7) SELF-TEST panel with a button that runs at least 8 checks and renders one line per check starting with a check mark or a cross, plus a final summary line in the exact form N/M passed: total cell count matches the inlined data; every rendered score recomputes from the detail table values; column sorting works both directions; no NaN, undefined, or null text renders anywhere; every VERDICT number appears in the detail data; grade thresholds are applied identically in every row; every framework appears in the matrix and the scoring table; reliability counts match the RELIABILITY panel.\n\nDark, high-contrast, executive-readable design: big numbers, clear hierarchy, no clutter. Return only the complete HTML."},
 ]
 
 
@@ -649,144 +634,12 @@ RAWPLUS_MAX_ROUNDS = 4  # 4 x per-chunk cap; context 261k holds prompt+output
 # against identical, finite input. Agent harnesses read the files from disk;
 # raw/raw+ get the compact parts inlined into the prompt.
 # ---------------------------------------------------------------------------
-LOGREPORT_DIR = os.path.join(WORK_DIR, "logreport-fixture")
 
 # per-cell input fixtures: copied fresh into every harness workdir so each
 # cell works on its own pristine copy (agents edit theirs in place)
 TASK_FIXTURES = {
-    "bugfix": ("expenses-broken.html", "expenses.html"),
     "codereview": ("review-sample.py", "review-sample.py"),
 }
-
-
-def _build_logreport_fixture():
-    """Snapshot the previous run's failure evidence into LOGREPORT_DIR:
-    runs.json (the previous run's per-cell records), errors.log (the failure
-    lines its orchestrator logged), bench-excerpt.log (its full orchestrator
-    window) and per-framework server-log error excerpts."""
-    os.makedirs(LOGREPORT_DIR, exist_ok=True)
-    prev_file = None
-    run_ts = STATE.get("run_started") or time.time()
-    for f in sorted(glob.glob(os.path.join(RUNS_DIR, "*.json")),
-                    key=os.path.getmtime, reverse=True):
-        try:
-            with open(f) as fh:
-                d = json.load(fh)
-        except (OSError, json.JSONDecodeError):
-            continue
-        if d.get("ts") and d["ts"] < run_ts:
-            prev_file = (f, d)
-            break
-
-    bench_lines = []
-    prev_start = prev_end = None
-    if prev_file:
-        f, d = prev_file
-        rows = [{"framework": r.get("framework"), "harness": r.get("harness"),
-                 "status": r.get("status"), "latency": r.get("latency"),
-                 "error": (r.get("error") or "")[:200]}
-                for r in (d.get("results") or [])]
-        with open(os.path.join(LOGREPORT_DIR, "runs.json"), "w") as fh:
-            json.dump({"run_file": os.path.basename(f),
-                       "task": d.get("task_id"), "model_set": d.get("model_set"),
-                       "ts": d.get("ts"), "cells": rows}, fh, indent=1)
-        prev_start = d.get("ts") or 0
-        # runs execute cells sequentially — the window spans the summed latencies
-        prev_end = prev_start + sum(r.get("latency") or 0 for r in rows) + 120
-    if not prev_file:
-        with open(os.path.join(LOGREPORT_DIR, "runs.json"), "w") as fh:
-            json.dump({"note": "no previous run found — analyze whatever "
-                               "failures appear in the logs"}, fh, indent=1)
-
-    bench_path = os.path.join(LOG_DIR, "bench.log")
-    if os.path.isfile(bench_path):
-        with open(bench_path, encoding="utf-8", errors="replace") as fh:
-            for line in fh:
-                m = re.match(r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})", line)
-                if m:
-                    try:
-                        t = time.mktime(time.strptime(m.group(1), "%Y-%m-%d %H:%M:%S"))
-                    except ValueError:
-                        continue
-                    if prev_start and not (prev_start - 60 <= t <= prev_end + 60):
-                        continue
-                    bench_lines.append(line)
-        with open(os.path.join(LOGREPORT_DIR, "bench-excerpt.log"), "w") as fh:
-            fh.writelines(bench_lines[-3000:])
-        # the orchestrator's failure lines — the primary root-cause evidence
-        err_lines = [l for l in bench_lines if re.search(
-            r"error|fail|timeout|⚠|no output|empty response|stopped|exited", l, re.I)]
-        with open(os.path.join(LOGREPORT_DIR, "errors.log"), "w") as fh:
-            fh.writelines(err_lines[-120:])
-
-    # per-framework server logs: error-class lines only, capped
-    for fw in ("omlx", "mtplx", "mlxvlm", "mlxserve"):
-        logs = sorted(glob.glob(os.path.join(LOG_DIR, f"{fw}-*.log")),
-                      key=os.path.getmtime)
-        if not logs:
-            continue
-        err_lines = []
-        with open(logs[-1], encoding="utf-8", errors="replace") as fh:
-            for line in fh:
-                if re.search(r"ERROR|WARNING|Traceback|reject|guard|failed|stall", line, re.I):
-                    err_lines.append(line)
-        with open(os.path.join(LOGREPORT_DIR, f"{fw}.log"), "w") as fh:
-            fh.writelines(err_lines[-400:])
-
-
-def _execdash_inline(max_runs=11, cap=60000):
-    """Compact digest of the most recent runs, inlined into the execdash
-    prompt: per task × framework × harness status/latency/tok-s/tokens/
-    iterations/error — everything an executive dashboard needs, nothing
-    more (no artifacts, no narration)."""
-    import glob as _g
-    files = sorted(_g.glob(os.path.join(RUNS_DIR, "*.json")),
-                   key=os.path.getmtime, reverse=True)[:max_runs]
-    out = {"models": {}, "tasks": []}
-    for f in reversed(files):   # oldest first → task order matches campaign
-        try:
-            with open(f, encoding="utf-8") as fh:
-                d = json.load(fh)
-        except (OSError, json.JSONDecodeError):
-            continue
-        for fw, c in (d.get("frameworks") or {}).items():
-            out["models"].setdefault(fw, c.get("model"))
-        cells = []
-        for r in (d.get("results") or []):
-            cells.append({
-                "framework": r.get("framework"), "harness": r.get("harness"),
-                "status": r.get("status"),
-                "latency_s": r.get("latency"), "tps": r.get("tps"),
-                "server_tgs": r.get("server_tgs"), "server_pp": r.get("server_pp"),
-                "tokens": r.get("tokens"),
-                "tokens_source": r.get("tokens_source"),
-                "iterations": r.get("iterations"),
-                "truncated": bool(r.get("truncated")),
-                "error": (r.get("error") or "")[:100] or None})
-        out["tasks"].append({"task_id": d.get("task_id"),
-                             "task_name": d.get("task_name"),
-                             "cells": cells})
-    body = json.dumps(out, separators=(",", ":"))
-    if len(body) > cap:   # drop the oldest tasks until it fits
-        while len(body) > cap and len(out["tasks"]) > 1:
-            out["tasks"].pop(0)
-            body = json.dumps(out, separators=(",", ":"))
-    return body
-
-
-def _logreport_inline():
-    """The compact input inlined into the prompt for harnesses that cannot
-    read files: runs.json plus the orchestrator's failure lines."""
-    parts = []
-    for name in ("runs.json", "errors.log"):
-        p = os.path.join(LOGREPORT_DIR, name)
-        if os.path.isfile(p):
-            with open(p, encoding="utf-8", errors="replace") as fh:
-                body = fh.read(40000)
-            if body.strip():
-                parts.append(f"--- {name} ---\n{body}")
-    return "\n\n".join(parts) if parts else \
-        "(fixture not built — report that no input data was available)"
 
 
 HARNESS_LABELS = {
@@ -794,7 +647,6 @@ HARNESS_LABELS = {
     "rawplus": "raw+",
     "pi": "pi",
     "opencode": "opencode",
-    "goose": "Goose",
     "hart": "hart",
 }
 
@@ -805,7 +657,7 @@ _hart_cfg = CONFIG.get("hart_path", os.path.join(ROOT, "hart", "hart.py"))
 HART_PATH = os.path.expanduser(
     _hart_cfg if os.path.isabs(_hart_cfg) else os.path.join(ROOT, _hart_cfg))
 
-# Routing for agent harnesses (pi/opencode/goose). True = via the local
+# Routing for agent harnesses (pi/opencode). True = via the local
 # measurement proxy, which adds per-request PP/TGS/TTFT to their rows.
 # False = straight to the framework, byte-identical to an independent harness
 # run (agent rows then report TPS only — raw keeps full metrics either way).
@@ -1104,7 +956,7 @@ def server_snapshot(fw):
                 "pre_s": t.get("prefill_seconds") or 0.0,
                 "gen_s": t.get("generation_seconds") or 0.0,
                 "cache_eff": s.get("cache_efficiency")}
-    if fw == "mlxserve":
+    if fw in ("mlxserve", "vllm"):
         try:
             with urllib.request.urlopen(
                     f"http://127.0.0.1:{cfg['port']}/metrics", timeout=4) as r:
@@ -1113,14 +965,16 @@ def server_snapshot(fw):
             return None
         if "vllm:prompt_tokens_total" not in m:
             return None
-        return {"kind": "mlxserve",
+        snap = {"kind": "mlxserve" if fw == "mlxserve" else "vllm",
                 "prompt": m.get("vllm:prompt_tokens_total", 0),
                 "completion": m.get("vllm:generation_tokens_total", 0),
-                "cache": m.get("mlx_serve:prefix_cache_tokens_total", 0),
                 "pre_s": m.get("vllm:request_prefill_time_seconds_sum", 0.0),
                 "gen_s": m.get("vllm:request_decode_time_seconds_sum", 0.0),
                 "ttft_s": m.get("vllm:time_to_first_token_seconds_sum", 0.0),
                 "ttft_n": m.get("vllm:time_to_first_token_seconds_count", 0)}
+        if fw == "mlxserve":
+            snap["cache"] = m.get("mlx_serve:prefix_cache_tokens_total", 0)
+        return snap
     if fw == "mlxvlm":  # mlx_vlm.server: JSON /metrics with per-request records
         m = _get_json(f"http://127.0.0.1:{cfg['port']}/metrics")
         if m is None:
@@ -1164,7 +1018,7 @@ def server_cell_delta(fw, before, after):
                 out["server_tgs_flagged"] = True
         out["server_prompt_tokens"] = dp
         out["server_completion_tokens"] = dc
-    elif before["kind"] == "mlxserve":
+    elif before["kind"] in ("mlxserve", "vllm"):
         dp = after["prompt"] - before["prompt"]
         dc = after["completion"] - before["completion"]
         dpre = max(after["pre_s"] - before["pre_s"], 0.0)
@@ -1185,8 +1039,9 @@ def server_cell_delta(fw, before, after):
             out["server_ttft_avg"] = round(dttft / dtn, 3)
         out["server_prompt_tokens"] = dp
         out["server_completion_tokens"] = dc
-        # counters can reset mid-cell — a negative delta is noise, not cache
-        out["server_cached_tokens"] = max(after["cache"] - before["cache"], 0)
+        if before["kind"] == "mlxserve":
+            # counters can reset mid-cell — a negative delta is noise
+            out["server_cached_tokens"] = max(after["cache"] - before["cache"], 0)
     elif before["kind"] == "mlxvlm":
         fresh = _fresh_requests(before["recent"], after["recent"])
         pp, pp_m = _weighted_rate(fresh, ("prefill_tok_s",),
@@ -2238,58 +2093,11 @@ def _result_text(result, cap=110):
     return ""
 
 
-_GOOSE_BANNER = re.compile(
-    r"^\s*(_+\( O\)>|\\____\)|L L\s|─────)")          # goose ASCII banner
-_GOOSE_RUST_NOISE = re.compile(
-    r"^\s*(Text\(|TextContent \{|\}|(\},?))\s*$"       # Rust debug-dump frame
-    r"|^\s*(meta|annotations|audience|priority|last_modified):"
-    r"|^\s*(Some\(|None,|\),?)\s*$"
-    r"|^\s*Annotations \{\s*$")
-
-
-def _render_goose_line(s):
-    """goose --debug narration (plain text) → shared tail vocabulary.
-    '▸ write' + following 'path hi.txt' lines become one 🔧 line; the Rust
-    tool-result dump collapses to ✓ text; the stderr stats become ⟳ lines."""
-    m = re.search(r"●\s*new session · (.*)$", s)    # rides after the goose art
-    if m:
-        return f"● goose · {m.group(1)}"
-    if _GOOSE_BANNER.match(s) or s in ("goose is ready", "Stats:"):
-        return None
-    if _GOOSE_RUST_NOISE.match(s):
-        return None
-    m = re.match(r"^\s*▸\s*(\S+)", s)
-    if m:
-        _GOOSE_STREAM["tool"] = m.group(1)
-        return f"🔧 {m.group(1)}…"
-    if s.startswith(("path ", "filePath ")):
-        tool = _GOOSE_STREAM.get("tool") or "tool"
-        return f"🔧 {tool} {os.path.basename(s.split(None, 1)[1])}"
-    if s.startswith(("content:", "command:")):
-        return None                                   # payload line: skip
-    m = re.search(r'text:\s*"((?:[^"\\]|\\.)*)"', s)
-    if m:
-        try:
-            txt = json.loads('"' + m.group(1) + '"')
-        except json.JSONDecodeError:
-            txt = m.group(1)
-        _GOOSE_STREAM["tool"] = None
-        return f"  ✓ {txt[:110]}"
-    if s.startswith("Time to first token:"):
-        return f"⟳ ttft {s.split(':', 1)[1].strip()}"
-    if s.startswith("Tokens/sec:"):
-        return f"⟳ decode {s.split(':', 1)[1].strip()} tok/s"
-    if s.startswith("Output tokens:"):
-        return f"⟳ {s.split(':', 1)[1].strip()} out tok"
-    return s[:300]
-
-
-_GOOSE_STREAM = {"tool": None}   # pending "▸ tool" name across debug lines
 
 
 def harness_stream_format(line, harness=""):
     """Render one line of a harness stream as a compact TUI-style tail line —
-    pi/opencode JSON events and goose --debug narration become the same
+    pi/opencode JSON events become the same
     vocabulary (🔧 tool calls, ◌ thinking, ● replies, ⟳ steps, ✓/⚠ results):
     the same event stream their TUIs render. Returns None for high-frequency
     deltas and banner noise (they would drown the tail); returns the raw line
@@ -2298,8 +2106,6 @@ def harness_stream_format(line, harness=""):
     s = line.strip()
     if not s:
         return None
-    if harness == "goose" and not s.startswith("{"):
-        return _render_goose_line(s)
     if not s.startswith("{"):
         return s[:300]
     try:
@@ -2366,21 +2172,10 @@ def harness_stream_format(line, harness=""):
 
 def finalize_harness_stream(harness, out):
     """Extract (text, exact_output_tokens, extra_metrics) from a pi/opencode
-    JSON event stream or goose's --stats block. Text = the assistant's chat
+    JSON event stream. Text = the assistant's chat
     reply (artifacts come from disk); tokens = the model's real output tokens
     summed per assistant message/step — far more honest than the word-count
     estimate. Falls back to (raw output, None, {}) when nothing parses."""
-    if harness == "goose":
-        met = {}
-        m = re.search(r"Output tokens:\s*(\d+)", out)
-        tokens = int(m.group(1)) if m else None
-        m = re.search(r"Time to first token:\s*([\d.]+)", out)
-        if m:
-            met["ttft"] = float(m.group(1))
-        m = re.search(r"Tokens/sec:\s*([\d.]+)", out)
-        if m:
-            met["tgs"] = float(m.group(1))
-        return out, tokens, met
     if not out or not out.lstrip().startswith("{"):
         return out, None, {}
     text_parts, tokens, steps, last_input = [], 0, 0, None
@@ -2490,50 +2285,6 @@ def prep_opencode(fw):
             },
         }, f, indent=2)
     return os.path.join(OC_CONFIG_ROOT, fw)
-
-
-GOOSE_CONFIG_ROOT = os.path.join(ROOT, "harness-configs", "goose")
-
-
-def prep_goose(fw):
-    """Generate an isolated goose config (XDG_CONFIG_HOME isolation, verified:
-    goose's openai provider honors OPENAI_BASE_URL from the process env and
-    the model from providers.openai.model). Lean extension set — developer
-    only — so runs stay comparable with the other agent harnesses.
-    Returns (cmd, env)."""
-    cfg = FRAMEWORKS[fw]
-    cfgdir = os.path.join(GOOSE_CONFIG_ROOT, fw, "goose")
-    os.makedirs(cfgdir, exist_ok=True)
-    with open(os.path.join(cfgdir, "config.yaml"), "w") as f:
-        f.write(f"""\
-GOOSE_TELEMETRY_ENABLED: false
-active_provider: openai
-providers:
-  openai:
-    enabled: true
-    model: {cfg['model']}
-    configured: true
-OPENAI_BASE_URL: {agent_base_url(fw)}
-OPENAI_API_KEY: bench
-extensions:
-  developer:
-    enabled: true
-    type: builtin
-    name: developer
-  computercontroller:
-    enabled: false
-    type: builtin
-    name: computercontroller
-  summon:
-    enabled: false
-    type: platform
-    name: summon
-  chatrecall:
-    enabled: false
-    type: platform
-    name: chatrecall
-""")
-    return os.path.join(GOOSE_CONFIG_ROOT, fw)
 
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
@@ -2881,14 +2632,6 @@ def run_harness(fw, harness, task_name, prompt, settings, task=None):
                    "--format", "json",
                    "--model", f"bench/{cfg['model']}", prompt]
             env = dict(os.environ, XDG_CONFIG_HOME=prep_opencode(fw))
-        elif harness == "goose":
-            xdg = prep_goose(fw)
-            # --debug: TUI-style tool narration (forwarded to the activity feed);
-            # --stats: real token counts + TTFT/decode rate on stderr
-            cmd = ["goose", "run", "-t", prompt, "--no-session",
-                   "--debug", "--stats"]
-            env = dict(os.environ, XDG_CONFIG_HOME=xdg, OPENAI_API_KEY="bench",
-                       OPENAI_BASE_URL=agent_base_url(fw))
         elif harness == "hart":
             if not os.path.isfile(HART_PATH):
                 return {"status": "error", "latency": 0, "tokens": 0, "tps": 0.0,
@@ -2938,7 +2681,7 @@ def run_harness(fw, harness, task_name, prompt, settings, task=None):
             t0 = time.monotonic()
 
             def _line_handler(line):
-                # JSON event streams (pi/opencode) and goose's debug narration
+                # JSON event streams (pi/opencode) render as compact lines
                 # render as compact semantic activity lines; other plain text
                 # (hart) passes through. Delta-class events return None and
                 # are skipped so the feed stays readable.
@@ -2963,7 +2706,7 @@ def run_harness(fw, harness, task_name, prompt, settings, task=None):
             # Structured streams carry the assistant's chat reply and the
             # model's REAL token counts — replace the raw stdout blob and the
             # word-count estimate with them (artifacts still come from disk).
-            if harness in ("pi", "opencode", "goose"):
+            if harness in ("pi", "opencode"):
                 out, exact_tokens, ev_metrics = finalize_harness_stream(harness, out)
                 metrics.update(ev_metrics)
             text = out
@@ -2972,7 +2715,7 @@ def run_harness(fw, harness, task_name, prompt, settings, task=None):
             st = proxy_read()
             if st["requests"]:
                 # UPDATE — a rebind here threw away the stream's `calls` (the
-                # Iterations column) and goose's parsed timing whenever the
+                # Iterations column) and the harness's parsed timing whenever the
                 # proxy saw traffic
                 metrics.update({"prompt_tokens": st["prompt_tokens"],
                                 "ttft": round(st["ttft_sum"] / st["requests"], 3)})
@@ -3079,7 +2822,7 @@ def run_harness(fw, harness, task_name, prompt, settings, task=None):
               "truncated": truncated, **metrics}
     # iterations = how many model requests the harness needed. Sources per
     # harness: calls (pi/hart step counts), 1+continuations (raw+ rounds),
-    # server_requests (opencode/goose via the framework's own counter),
+    # server_requests (opencode via the framework's own counter),
     # 1 for raw. None when nothing measured (e.g. mlxvlm cells).
     iters = (metrics.get("calls")
              or (1 + metrics["continuations"] if metrics.get("continuations")
@@ -3187,16 +2930,11 @@ def run_benchmark(req):
 
     # data-analysis tasks get their input fixture snapshotted from the
     # PREVIOUS run's logs before anything else touches the work dir
-    if task_id == "logreport":
-        _build_logreport_fixture()
-        prompt = prompt.replace("@LOGREPORT_INLINE@", _logreport_inline())
-    elif task_id == "execdash":
-        prompt = prompt.replace("@EXECDASH_DATA@", _execdash_inline())
-    elif task_id in ("bugfix", "codereview"):
+    if task_id == "codereview":
         # inline the fixture source; if the user edited the prompt and removed
         # the placeholder, append it anyway so the model always sees the code
-        fname = "expenses-broken.html" if task_id == "bugfix" else "review-sample.py"
-        ph = "@BUGFIX_SOURCE@" if task_id == "bugfix" else "@CODE_REVIEW_SOURCE@"
+        fname = "review-sample.py"
+        ph = "@CODE_REVIEW_SOURCE@"
         try:
             with open(os.path.join(ROOT, "fixtures", fname), encoding="utf-8") as fh:
                 body = fh.read()
@@ -3313,9 +3051,9 @@ def run_benchmark(req):
                                 srv = {}
                         if srv:
                             row.update(srv)
-                        # agent cells whose stream gave no exact tokens (goose
-                        # writes the artifact to disk and chats ~300 tokens;
-                        # hart narrates) undercount massively — the server-side
+                        # agent cells whose stream gave no exact tokens (a
+                        # harness that writes its artifact to disk or narrates
+                        # short chat lines) undercount massively — the server-side
                         # completion delta counts EVERY token the model
                         # produced in the cell window. Use it as the truth.
                         if row.get("tokens_estimated") \
@@ -3479,7 +3217,7 @@ def _validate_model_pick(fw, model):
                 f"Start it to find out."}
     fws = list(cand.get("frameworks") or [])
     if cand.get("custom_path") and not fws:
-        fws = ["mlxvlm", "mlxserve"]   # plain folder models: path-servable only
+        fws = ["mlxvlm", "mlxserve", "vllm"]   # plain folder models: path-servable
     if fw not in fws:
         where = ("the MTPLX store (a different runtime format)"
                  if (cand.get("source") or "") == "mtplx"
@@ -3527,7 +3265,7 @@ def _scan_models_payload(store_filter=None, extra=None):
                 "id": entry, "store": "custom", "custom_path": d,
                 "size_gb": discovery.dir_size_gb(d),
                 "context_length": discovery.file_context(os.path.join(d, "config.json")),
-                "frameworks": ["mlxvlm", "mlxserve"],
+                "frameworks": ["mlxvlm", "mlxserve", "vllm"],
                 "in_cache": False, "served": False,
             })
     models_out = []

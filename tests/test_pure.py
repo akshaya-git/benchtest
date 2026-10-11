@@ -56,14 +56,6 @@ class TestSeamOverlap(unittest.TestCase):
 
 
 class TestHarnessStream(unittest.TestCase):
-    def test_goose_stats(self):
-        out = ("thinking...\nOutput tokens: 4242\n"
-               "Time to first token: 0.83\nTokens/sec: 51.2\n")
-        text, tokens, met = server.finalize_harness_stream("goose", out)
-        self.assertEqual(tokens, 4242)
-        self.assertEqual(met.get("ttft"), 0.83)
-        self.assertEqual(met.get("tgs"), 51.2)
-
     def test_pi_agent_end(self):
         ev = {"type": "agent_end", "messages": [
             {"role": "user", "content": "build it"},

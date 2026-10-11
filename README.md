@@ -2,7 +2,7 @@
 
 **Local LLM benchmarking for Apple Silicon.** Compare how the same model performs
 across the major local inference frameworks (OMLX, MTPLX, MLX-VLM, MLX-Serve) and
-across harnesses (raw API, raw+ streaming, and the agent CLIs pi / opencode / goose /
+across harnesses (raw API, raw+ streaming, and the agent CLIs pi / opencode /
 hart) — with real throughput (TPS/TGS/PP), latency, and the actual artifact
 each cell produces, linked for your own review.
 
@@ -58,7 +58,6 @@ artifact so the Artifacts links show what was actually built.
 |---------|---------|-------------|
 | **pi** | `npm install -g @earendil-works/pi-coding-agent` | [github.com/earendil-works/pi](https://github.com/earendil-works/pi) |
 | **opencode** | `npm install -g opencode-ai` | [opencode.ai](https://opencode.ai) · [github.com/anomalyco/opencode](https://github.com/anomalyco/opencode) |
-| **goose** | `brew install aaif-goose/tap/goose` | [github.com/aaif-goose/goose](https://github.com/aaif-goose/goose) |
 | **hart** | *bundled in this repo — no install* | [`hart/`](hart/) |
 
 - **Models** — already on your machine (benchtest auto-discovers them):
@@ -113,14 +112,16 @@ python3 server.py            # or: make run
 #    ➜ Open http://localhost:7090
 ```
 
-**The task suite** (each graded by requirement checks + a headless-Chrome runtime
-probe that actually uses the produced page): `tetris`, `snake`, `pong`, `todo`,
-`fib`, `webdb` (single-file app over an embedded store), `bugfix` (fix 4 planted
-bugs, graded by the app's own self-test), `codereview` (find the planted defects
-in a sample module), `markdown`, `agentconsole` (chat → tool-calling agent with
-skills + MCP deploy), `logreport` (analyze the previous run's logs), `execdash` (build an executive decision dashboard from recent run data), plus
+**The task suite** — deliberately small, each task a different kind of work:
+`tetris` (interactive game logic), `codereview` (find the planted defects in a
+sample module), `markdown` (a CommonMark-subset compiler with spec tests),
+`agentconsole` (chat → tool-calling agent with skills + MCP deploy), plus
 **✏️ Custom prompt** for anything else — its template documents what models can
-and cannot reach in this environment.
+and cannot reach in this environment. Every done cell also gets a
+**reliability QA score** (`qa.py`): deterministic artifact checks — delivered,
+substantial, structurally complete, self-test result, untruncated — with the
+breakdown one hover away. The judgment stays human; the score only measures
+whether the delivery is sound.
 
 Then in the browser: pick your frameworks and harnesses, choose a task (or edit the
 prompt), and hit **▶ Run Benchmark**.
@@ -138,6 +139,7 @@ prompt), and hit **▶ Run Benchmark**.
 | Port | Used by | Notes |
 |------|---------|-------|
 | **7090** | Dashboard + HTTP API | The web UI you open in the browser (`host`/`port` in `config.json`). |
+| **7005** | vLLM (optional framework) | Standard HF repos on the vLLM runtime — not MLX builds. |
 | **7010** | Measurement proxy (internal) | Must be **free** when `route_via_proxy: true` — agent harnesses (pi, opencode, goose, hart) send their model calls here; the proxy forwards to the framework under test and records per-request TTFT / prompt / completion tokens (the agent rows' PP/TGS and the token-cap-truncation warning). If 7010 is taken, set `route_via_proxy: false` (agent cells then rely on server-side metrics only) or free the port. |
 | **7001–7004** | Framework servers | `omlx` 7001, `mtplx` 7002, `mlxvlm` (MLX-VLM) 7003, `mlxserve` (MLX-Serve) 7004 — per-framework `frameworks.<id>.port` in `config.json`; change freely as long as each is unique and free. |
 

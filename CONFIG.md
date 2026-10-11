@@ -14,7 +14,7 @@ defaults, so you only need to specify the keys you care about.
 |-----|------|---------|-------------|
 | `host` | string | `"127.0.0.1"` | Interface the web UI binds to. **Keep `127.0.0.1`** — binding `0.0.0.0` exposes run control and run deletion to your whole network (the server warns loudly if you do). |
 | `port` | int | `7090` | Port for the web UI. Override per-invocation with `python3 server.py <port>`. |
-| `route_via_proxy` | bool | `false` | Route agent harnesses (pi/opencode/goose/hart) through the local measurement proxy so their rows get per-request PP/TGS/TTFT. `false` = agents connect straight to the framework (byte-identical to an independent harness run; agent rows then report TPS only). |
+| `route_via_proxy` | bool | `false` | Route agent harnesses (pi/opencode/hart) through the local measurement proxy so their rows get per-request PP/TGS/TTFT. `false` = agents connect straight to the framework (byte-identical to an independent harness run; agent rows then report TPS only). |
 | `pi_thinking` | string | `""` | pi thinking-level suffix appended to `--model` (e.g. `":high"`). Empty = inherit the server's reasoning setting so all cells share one uniform budget. |
 | `reasoning` | object | `{"short": "low", "long": "medium"}` | Reasoning level per task type, applied at framework server start. Standard tasks run at the `short` level, LONG tasks (chip8, raytracer, spreadsheet, markdown, conduit) at the `long` level. Each framework maps a level to its own parameter via `reasoning_flags` (CLI flags) or `reasoning_file` (omlx's per-model settings file). See below. |
 | `hart_path` | string | `"~/Documents/hart/hart.py"` | Path to the `hart` agentic harness script. |

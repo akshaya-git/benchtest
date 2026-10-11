@@ -1,6 +1,6 @@
 ---
 name: benchtest-operator
-description: Operate, monitor and debug the benchtest local-LLM benchmark (Apple Silicon; OMLX/MTPLX/MLX-VLM/MLX-Serve × raw/raw+/pi/opencode/Goose/hart). Use when the user asks to run, monitor, compare or debug benchmark runs, or when benchmark artifacts or logs need triage.
+description: Operate, monitor and debug the benchtest local-LLM benchmark (Apple Silicon; OMLX/MTPLX/MLX-VLM/MLX-Serve/vLLM × raw/raw+/pi/opencode/hart). Use when the user asks to run, monitor, compare or debug benchmark runs, or when benchmark artifacts or logs need triage.
 ---
 
 # benchtest operator
@@ -68,21 +68,18 @@ harnesses against them, and collects the produced artifacts for review.
 ### Mental model
 
 - **Model set** = one model per framework (`config.json → model_sets`). Two
-  shipped families: `qwen38-27b` (all 4 frameworks) and `flash-next` (MTPLX
+  shipped families: `qwen38-27b` (all 4 MLX-side frameworks; vLLM picks its own compatible HF repos) and `flash-next` (MTPLX
   gets the Speed build, OMLX the 4bit-mtp). Day-to-day selection happens in
   the dashboard's Models panel (folder → dropdown → Validate).
 - **Run** = one task × the selected frameworks × harnesses. Each cell = one
   framework/harness pair. **Campaign** = sets × all tasks, sequential.
-- **No QA gate** (removed as unreliable): each cell saves its artifact and
-  the dashboard's Open ▸ link is the review surface — results are judged by
-  looking at them, not by a score.
-- Tasks: tetris, snake, pong, todo, fib, markdown, agentconsole, logreport
-  (analyze the previous run's logs), webdb (single-file app over
-  localStorage), bugfix (fix 4 planted bugs in a broken app, graded by its
-  self-test), codereview (find planted defects in a Python module), execdash
-  (build an executive decision dashboard from the most recent run data),
-  plus a custom-prompt option. bugfix and markdown are the best model/harness
-  discriminators.
+- **Reliability QA** (`qa.py`, deterministic): artifact delivered/substantial/
+  complete, self-test N/M result, untruncated → 0-100 with hover breakdown.
+  No probes, no heuristics; the human judgment stays with the artifact.
+- Tasks (deliberately small): tetris (game logic), codereview (planted
+  defects), markdown (compiler + spec tests), agentconsole (agent + skills +
+  MCP deploy), plus a custom-prompt option. markdown and codereview are the
+  best model/harness discriminators.
 
 ### Key files
 

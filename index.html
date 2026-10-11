@@ -333,7 +333,7 @@ function updateReasoningNote() {
   if (!t) { $('reasoningNote').textContent = 'Reasoning level: your settings — custom prompt, not requirement-scored'; return; }
   const lvl = REASONING[t && t.long ? 'long' : 'short'] || (t && t.long ? 'medium' : 'low');
   let note = `Reasoning level: ${lvl} — ${t && t.long ? 'LONG task' : 'standard task'} (framework server starts with this level)`;
-  const FIX = { bugfix: 'expenses-broken.html', codereview: 'review-sample.py' };
+  const FIX = { codereview: 'review-sample.py' };
   if (FIX[t.id]) note += ` · fixture ${FIX[t.id]} inlined below — you can edit it; agent harnesses get a pristine copy per cell`;
   $('reasoningNote').textContent = note;
 }
@@ -369,7 +369,7 @@ const CUSTOM_PROMPT_TEMPLATE = `# Custom task — replace everything in this box
 #   inside this prompt, plus files or URLs you explicitly point it to.
 # - raw / raw+ harnesses: text in → text out. No file access, no internet.
 #   If you select them, this prompt must be fully self-contained.
-# - pi / opencode / Goose / hart: local agents with shell + file access on
+# - pi / opencode / hart: local agents with shell + file access on
 #   this Mac, each in its own scratch working directory. They CAN read a
 #   local folder or fetch a URL if you give the exact absolute path
 #   (e.g. /Users/you/projects/my-repo) or URL. They cannot use your browser
@@ -916,7 +916,8 @@ async function initModelPanel() {
     document.getElementById('machineLine').textContent =
       (m.chip || 'Mac') + ' \u00b7 ' + m.total_gb + ' GB RAM \u00b7 ~' + m.usable_gb + ' GB usable';
     const defaults = { omlx: m.hf_cache, mlxvlm: m.hf_cache,
-                       mlxserve: m.hf_cache, mtplx: m.mtplx_store };
+                       mlxserve: m.hf_cache, vllm: m.hf_cache,
+                       mtplx: m.mtplx_store };
     Object.keys(FRAMEWORKS).forEach(fw => {
       const inp = document.querySelector('.fwFolder[data-fw="' + fw + '"]');
       if (inp && !inp.value && defaults[fw]) inp.value = defaults[fw];
