@@ -2650,9 +2650,12 @@ def run_harness(fw, harness, task_name, prompt, settings, task=None):
         elif harness == "aider":
             # aider edits files in its CWD — the generic workdir + per-cell
             # fixture copy below covers it (same flow as pi)
-            cmd = ["aider", "--model", cfg["model"],
+            # model MUST carry the openai/ prefix (litellm routing) or aider
+            # fails model configuration; whole edit format = unattended edits
+            cmd = ["aider", "--model", "openai/" + cfg["model"],
                    "--openai-api-base", agent_base_url(fw),
                    "--openai-api-key", "bench",
+                   "--edit-format", "whole",
                    "--message", prompt,
                    "--yes-always", "--no-auto-commits", "--no-git",
                    "--no-check-update", "--no-show-release-notes",
