@@ -2650,10 +2650,13 @@ def run_harness(fw, harness, task_name, prompt, settings, task=None):
                    "--model", f"bench/{cfg['model']}", prompt]
             env = dict(os.environ, XDG_CONFIG_HOME=prep_opencode(fw))
         elif harness == "aider":
-            # aider edits files in its CWD — the generic workdir + per-cell
-            # fixture copy below covers it (same flow as pi)
             # model MUST carry the openai/ prefix (litellm routing) or aider
-            # fails model configuration; whole edit format = unattended edits
+            # fails model configuration; whole edit format = unattended edits.
+            # aider edits files in its CWD and --llm-history-file lands in
+            # the workdir — create it HERE (the generic block below must not
+            # mint a second, different workdir for this harness)
+            workdir = os.path.join(WORK_DIR, f"{fw}-{harness}-{uuid.uuid4().hex[:8]}")
+            os.makedirs(workdir, exist_ok=True)
             cmd = ["aider", "--model", "openai/" + cfg["model"],
                    "--openai-api-base", agent_base_url(fw),
                    "--openai-api-key", "bench",
@@ -2702,7 +2705,7 @@ def run_harness(fw, harness, task_name, prompt, settings, task=None):
                     "error": f"{label} CLI not found on PATH: {cmd[0]}"}
         else:
             log(f"dispatching via CLI: {cmd[0]}", fw=cfg["name"], harness=label)
-            if harness not in ("opencode", "hart"):  # these set their own workdir
+            if harness not in ("opencode", "hart", "aider"):  # these set their own workdir
                 workdir = os.path.join(WORK_DIR, f"{fw}-{harness}-{uuid.uuid4().hex[:8]}")
                 os.makedirs(workdir, exist_ok=True)
             if task and task.get("id") in TASK_FIXTURES and workdir:
