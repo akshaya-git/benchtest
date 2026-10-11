@@ -3543,6 +3543,7 @@ class Handler(BaseHTTPRequestHandler):
             with LOCK:
                 self._json({fw: {"name": c["name"], "port": c["port"],
                                  "model": c["model"],
+                                 "model_display": _model_display(c),
                                  "model_available": c.get("model_available", True),
                                  "model_set": CONFIG.get("model_set"),
                                  "repo": c.get("repo"),
@@ -3791,6 +3792,7 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": True, "set": CONFIG["model_set"],
                         "frameworks": {fw: {"name": c.get("name", fw),
                                             "model": c.get("model"),
+                                            "model_display": _model_display(c),
                                             "model_available": c.get("model_available", True)}
                                        for fw, c in FRAMEWORKS.items()}})
         elif self.path == "/api/proxy/clear":
