@@ -141,8 +141,8 @@
 
 <div class="chart-tabs" style="margin-bottom:14px;">
   <button class="ctab on" id="tab-dash" onclick="showTab('dash')">Dashboard</button>
+  <button class="ctab" id="tab-compare" onclick="showTab('compare')">📊 Benchmark Summary</button>
   <button class="ctab" id="tab-history" onclick="showTab('history')">🕘 Previous Results</button>
-  <button class="ctab" id="tab-compare" onclick="showTab('compare')">📊 Comparison</button>
 </div>
 
 <div id="page-dash">
@@ -278,22 +278,11 @@
   </div>
 </div>
 
-<!-- ===== COMPARISON PAGE ===== -->
+<!-- ===== BENCHMARK SUMMARY PAGE ===== -->
 <div id="page-compare" style="display:none">
   <div class="panel">
-    <h2>Model &amp; Framework Comparison</h2>
-    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px">
-      <div><label>Task</label><select id="cmpTask" onchange="renderComparison()"><option value="">All tasks</option></select></div>
-      <div><label>Reasoning</label><select id="cmpReason" onchange="renderComparison()"><option value="">All</option></select></div>
-      <div><label>Group by</label><select id="cmpGroup" onchange="renderComparison()">
-        <option value="framework">framework</option>
-        <option value="model">model</option>
-      </select></div>
-      <div style="font-size:11px;color:var(--muted)">completed cells only · TGS prefers server-side when captured</div>
-    </div>
-    <div id="cmpScoreboard"></div>
-    <canvas id="cmpChart" height="220" style="margin-top:10px"></canvas>
-    <div id="cmpMatrices" style="margin-top:10px"></div>
+    <h2>Benchmark Summary</h2>
+    <div id="cmpSummary"></div>
   </div>
 </div>
 
@@ -460,143 +449,56 @@ function showRowDetail(r) {
 }
 
 /* ---- comparison tab ---- */
-let cmpRuns = null;
-let cmpErrored = [];   // errored cells from the current comparison view
-const CMP_PALETTE = ['#e6edf3', '#58a6ff', '#3fb950', '#f0883e', '#db61a2', '#f85149', '#d29922'];
-
 async function renderComparison() {
-  cmpRuns = await api('/api/runs_history');   // refetch every visit: new runs appear live
-  const runs = cmpRuns;
-  const taskSel = $('cmpTask'), reasonSel = $('cmpReason');
-  const curTask = taskSel.value, curReason = reasonSel.value, groupBy = $('cmpGroup').value;
-  // populate filters once per data load
-  const tasks = [...new Set(runs.map(r => r.task))].sort();
-  if (taskSel.options.length <= 1) {
-    taskSel.innerHTML = '<option value="">All tasks</option>' + tasks.map(t => `<option>${esc(t)}</option>`).join('');
-    taskSel.value = curTask || '';
-  }
-  const reasons = [...new Set(runs.map(r => r.reasoning_level || 'unrecorded'))];
-  if (reasonSel.options.length <= 1) {
-    reasonSel.innerHTML = '<option value="">All</option>' + reasons.map(r => `<option>${esc(r)}</option>`).join('');
-    reasonSel.value = curReason || '';
-  }
-
+  const runs = await api('/api/runs_history');   // refetch every visit
+  const box = document.getElementById('cmpSummary');
   const cells = [];
-  const errored = [];   // excluded from stats but reported, not silently dropped
   for (const r of runs) {
-    if (taskSel.value && r.task !== taskSel.value) continue;
-    const rl = r.reasoning_level || 'unrecorded';
-    if (reasonSel.value && rl !== reasonSel.value) continue;
     for (const c of (r.rows || [])) {
-      if (!FRAMEWORKS[c.framework]) continue;   // dropped frameworks (e.g. vllm) stay out of comparisons
-      if (c.status !== 'done') { errored.push(Object.assign({}, c, { _rl: rl })); continue; }
-      cells.push(Object.assign({}, c, { _rl: rl }));
+      if (c.status === 'done' && c.tps != null && FRAMEWORKS[c.framework])
+        cells.push(c);
     }
   }
-  cmpErrored = errored;
-  if (!cells.length && !errored.length) {
-    $('cmpScoreboard').innerHTML = '<p style="color:var(--muted)">No completed cells match the filters.</p>';
-    $('cmpMatrices').innerHTML = '';
-    const cc = $('cmpChart'); cc.getContext('2d').clearRect(0, 0, cc.width, cc.height);
+  if (!cells.length) {
+    box.innerHTML = '<p style="color:var(--muted)">No completed runs yet — the summary fills in as the campaign produces cells.</p>';
     return;
   }
-
-  const fwName = id => (FRAMEWORKS[id] && FRAMEWORKS[id].name) || id;
-  const gk = $('cmpGroup').value === 'model'
-    ? (c => c.model || '—')
-    : (c => fwName(c.framework));
-  const groups = {};
-  for (const c of cells) {
-    const k = gk(c) || '—';
-    (groups[k] = groups[k] || []).push(c);
-  }
-  const names = Object.keys(groups);
-
-  // wins: per run, fastest completed cell (throughput is the comparable metric)
-  const wins = {};
-  for (const r of runs) {
-    if (taskSel.value && r.task !== taskSel.value) continue;
-    const rl = r.reasoning_level || 'unrecorded';
-    if (reasonSel.value && rl !== reasonSel.value) continue;
-    const done = (r.rows || []).filter(c => c.status === 'done' && FRAMEWORKS[c.framework]);
-    if (done.length < 2) continue;
-    const win = done.slice().sort((a, b) => ((b.tps || 0) - (a.tps || 0)))[0];
-    wins[gk(win)] = (wins[gk(win)] || 0) + 1;
-  }
-
-  const avg = a => a.filter(v => v != null).length ? a.filter(v => v != null).reduce((x, y) => x + y, 0) / a.filter(v => v != null).length : null;
-  const stats = names.map(n => {
-    const g = groups[n];
-    const tgs = g.map(c => c.server_tgs ?? c.tgs);
-    return {
-      name: n, cells: g.length,
-      tps: avg(g.map(c => c.tps)),
-      tgs: avg(tgs),
-      ttft: avg(g.map(c => c.server_ttft_avg)),
-      wins: wins[n] || 0,
-    };
-  }).sort((a, b) => (b.tps - a.tps));
-
-  const row = (st) => {
-    return `<tr><td><b>${esc(st.name)}</b></td><td>${st.cells}</td>` +
-      `<td>${st.tps == null ? '–' : st.tps.toFixed(1)}</td>` +
-      `<td>${st.tgs == null ? '–' : st.tgs.toFixed(1)}</td>` +
-      `<td>${st.ttft == null ? '–' : st.ttft.toFixed(2)}s</td>` +
-      `<td>${st.wins ? '🏆 ' + st.wins : '–'}</td></tr>`;
-  };
-  $('cmpScoreboard').innerHTML =
-    `<table><thead><tr><th>${$('cmpGroup').value === 'model' ? 'Model' : 'Framework'}</th><th>Cells</th><th>TPS tok/s</th><th>TGS tok/s</th><th>TTFT</th><th>Wins</th></tr></thead>` +
-    `<tbody>${stats.map(row).join('')}</tbody></table>` +
-    `<div style="font-size:11px;color:var(--muted);margin-top:6px">${cells.length} completed cells across ${new Set(cells.map(c => c._rl)).size} reasoning setting(s)</div>` +
-    (errored.length ? `<details style="margin-top:8px;font-size:12px"><summary style="cursor:pointer;color:var(--red)">${errored.length} errored cell(s) excluded from the comparison — click to see why</summary>` +
-      `<ul style="margin:6px 0 0 18px;padding:0">${errored.map((c, i) =>
-        `<li style="margin-bottom:2px"><a class="cell-link" onclick="showRowDetail(cmpErrored[${i}])"><b>${esc(c.framework)} / ${esc(c.harness)}</b></a>: ${esc(c.error || 'no error text recorded')}</li>`).join('')}</ul></details>`
-      : '');
-
-  drawCmpChart(stats);
-
-  // per-harness matrices (TPS + QA) — framework view only (models vary too much per harness to be readable otherwise)
-  const harnesses = [...new Set(cells.map(c => c.harness))];
-  const fwNames = Object.keys(groups);
-  const matrix = (metric) => {
-    const head = `<tr><th>Harness</th>${fwNames.map(n => `<th>${esc(n)}</th>`).join('')}</tr>`;
-    const body = harnesses.map(h => {
-      const vals = fwNames.map(n => {
-        const g = groups[n].filter(c => c.harness === h);
-        const v = avg(g.map(c => c[metric]));
-        return v == null ? '–' : v.toFixed(1);
-      });
-      return `<tr><td>${esc(h)}</td>${vals.map(v => `<td>${v}</td>`).join('')}</tr>`;
-    }).join('');
-    return `<h3 style="margin:14px 0 6px">TPS tok/s by harness</h3>` +
-      `<table><thead>${head}</thead><tbody>${body}</tbody></table>`;
-  };
-  $('cmpMatrices').innerHTML = matrix('tps');
-}
-
-function drawCmpChart(stats) {
-  const cv = $('cmpChart');
-  const W = cv.width = cv.parentElement.clientWidth - 4 || 1100;
-  const H = cv.height;
-  const ctx = cv.getContext('2d');
-  ctx.clearRect(0, 0, W, H);
-  const vals = stats.map(s => s.tps).filter(v => v != null);
-  if (!vals.length) return;
-  const max = Math.max(...vals) * 1.15;
-  const bw = Math.min(90, (W - 60) / stats.length - 12);
-  ctx.font = '11px ui-monospace, Menlo, monospace';
-  stats.forEach((st, i) => {
-    const x = 40 + i * ((W - 50) / stats.length);
-    const h = st.tps == null ? 0 : (st.tps / max) * (H - 60);
-    ctx.fillStyle = CMP_PALETTE[i % CMP_PALETTE.length];
-    ctx.fillRect(x, H - 30 - h, bw, h);
-    ctx.fillStyle = '#8b949e';
-    ctx.textAlign = 'center';
-    ctx.fillText(st.name.length > 14 ? st.name.slice(0, 13) + '…' : st.name, x + bw / 2, H - 12);
-    if (st.tps != null) { ctx.fillStyle = '#e6edf3'; ctx.fillText(st.tps.toFixed(1), x + bw / 2, H - 38 - h); }
-  });
-  ctx.save(); ctx.translate(12, H / 2); ctx.rotate(-Math.PI / 2);
-  ctx.textAlign = 'center'; ctx.fillText('avg TPS tok/s', 0, 0); ctx.restore();
+  cells.sort((a, b) => b.tps - a.tps);
+  // a fair speed table compares like with like: all rows share the model of
+  // the fastest cell overall
+  const cohort = cells[0].model || '(unknown model)';
+  const top = cells.filter(c => c.model === cohort).slice(0, 5);
+  const val = (v, d = 1) => v == null ? '–' : Number(v).toFixed(d);
+  const row = (c, rank, badge) =>
+    `<tr${rank <= 3 ? ' style="background:var(--panel2)"' : ''}>
+      <td>${badge || rank}</td>
+      <td style="color:var(--accent);font-weight:700">${esc((c.framework || '').toUpperCase())}</td>
+      <td>${esc(c.harness)}</td><td>${esc(c.task)}</td>
+      <td style="color:var(--green);font-weight:700">${c.tps.toFixed(1)}</td>
+      <td>${val(c.server_tgs ?? c.tgs)}</td>
+      <td>${val(c.server_pp ?? c.pp)}</td>
+      <td>${c.latency == null ? '–' : c.latency.toFixed(1)}</td>
+      <td>${c.iterations ?? '–'}</td>
+    </tr>`;
+  const medals = ['🥇 1', '🥈 2', '🥉 3'];
+  box.innerHTML = `
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+      ${top.slice(0, 3).map((c, i) => `
+        <div style="flex:1;min-width:220px;border:1px solid var(--line);border-radius:10px;padding:12px;background:var(--panel2)">
+          <div style="font-size:20px">${medals[i]} — ${esc((c.framework || '').toUpperCase())}</div>
+          <div style="font-size:12px;color:var(--muted)">${esc(c.harness)} · ${esc(c.task)}</div>
+          <div style="font-size:26px;font-weight:800;color:var(--green)">${c.tps.toFixed(1)} <span style="font-size:12px;font-weight:400">tok/s overall</span></div>
+        </div>`).join('')}
+    </div>
+    <h3 style="margin:6px 0 6px">Top ${top.length} runs — model cohort: <span style="font-family:var(--mono)">${esc(cohort)}</span></h3>
+    <div style="overflow-x:auto">
+    <table><thead><tr><th>#</th><th>Framework</th><th>Harness</th><th>Task</th>
+      <th>TPS tok/s</th><th>TGS tok/s</th><th>PP tok/s</th><th>Run time (s)</th><th>Iterations</th></tr></thead>
+    <tbody>${top.map((c, i) => row(c, i + 1, medals[i])).join('')}</tbody></table></div>
+    <p style="font-size:11px;color:var(--muted);margin-top:8px">
+      Ranked by overall TPS; all rows share the same model for a fair comparison.
+      TGS/PP prefer server-measured values when captured. Iterations = model calls
+      the harness needed.</p>`;
 }
 
 /* ---- campaign (Run All) ---- */
