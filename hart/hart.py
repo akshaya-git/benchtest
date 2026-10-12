@@ -1591,15 +1591,19 @@ def agent_validating(state):
                     heads.append(f"--- {name} ---\n" + "".join(f.readlines()[:120]))
             except OSError:
                 pass
+        # pre-3.12 pythons reject multi-line expressions inside f-strings —
+        # build the JSON blobs first so the prompt stays a plain f-string
+        plan_json = json.dumps([
+            {'id': s['id'], 'title': s['title'],
+             'acceptance': s.get('acceptance', []), 'done': s['done']}
+            for s in state['plan']['steps']], indent=1)
+        checks_json = json.dumps(checks, indent=1)
         messages = [
             {"role": "system", "content": system_prompt(
                 "validating", state["budget"]["effort"])},
             {"role": "user", "content": f"GOAL:\n{state['goal']}\n\nSTEP "
-             f"ACCEPTANCE CRITERIA:\n{json.dumps([
-                 {'id': s['id'], 'title': s['title'],
-                  'acceptance': s.get('acceptance', []), 'done': s['done']}
-                 for s in state['plan']['steps']], indent=1)}\n\nDETERMINISTIC "
-             f"CHECK RESULTS:\n{json.dumps(checks, indent=1)}\n\nARTIFACT HEADS:\n"
+             f"ACCEPTANCE CRITERIA:\n{plan_json}\n\nDETERMINISTIC "
+             f"CHECK RESULTS:\n{checks_json}\n\nARTIFACT HEADS:\n"
              + "\n".join(heads)[:12000] + "\n\nJudge whether the delivery meets "
              "the goal AND the acceptance criteria. Give your verdict JSON. If "
              "the goal is not met, your fix_actions must contain write_file "
