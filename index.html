@@ -170,10 +170,6 @@
         then run.</div>
       <div id="fwModelRows"></div>
       <div id="modelSetInfo" style="margin-top:8px;font-size:11px;color:var(--muted);line-height:1.6"></div>
-      <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center">
-        <button class="mini" id="campBtnAll" onclick="campaignStart()">▶ Run All tasks — selected models</button>
-        <span style="font-size:10.5px;color:var(--muted)">runs every task against the models selected above</span>
-      </div>
       <div id="campaignBanner" style="margin-top:8px"></div>
     </div>
 
@@ -188,8 +184,8 @@
 
     <div class="panel">
       <h2>Task &amp; Model Settings</h2>
-      <label>Task</label>
-      <select id="taskSelect"></select>
+      <label>Tasks <span style="font-weight:400;color:var(--muted)">(tick one, some, or all — Run Benchmark runs them in order)</span></label>
+      <div class="harness-grid" id="taskGrid"></div>
       <div id="reasoningNote" style="margin-top:6px;font-size:11px;color:var(--muted)"></div>
       <div class="settings-grid">
         <div><label>Temperature</label><input type="number" id="temp" value="0.7" step="0.1" min="0" max="2"></div>
@@ -200,7 +196,7 @@
     </div>
 
     <div class="panel" style="flex: 1; display: flex; flex-direction: column;">
-      <h2>Prompt (editable)</h2>
+      <h2>Prompt <span style="font-weight:400;color:var(--muted)">(editable when ✏️ Custom is ticked; named tasks run their own prompt)</span></h2>
       <textarea id="promptBox" spellcheck="false" style="flex: 1;"></textarea>
       <div class="controls">
         <button class="primary" id="runBtn" onclick="startRun()">▶ Run Benchmark</button>
@@ -262,7 +258,7 @@
       </tr>
     </thead>
     <tbody id="resultsBody">
-      <tr><td colspan="13" style="color:var(--muted);text-align:center;padding:22px;">No results yet — pick harnesses &amp; a task and hit Run Benchmark.</td></tr>
+      <tr><td colspan="13" style="color:var(--muted);text-align:center;padding:22px;">No results yet — tick tasks &amp; harnesses and hit Run Benchmark.</td></tr>
     </tbody>
   </table>
   </div>
@@ -315,38 +311,52 @@ async function api(path, opts) {
   return r.json();
 }
 
-/* ---- task dropdown ---- */
+/* ---- task checklist: tick the tasks, Run Benchmark runs them in order ---- */
 let REASONING = { short: 'low', long: 'medium' };
+function tickedTasks() {
+  return [...document.querySelectorAll('#taskGrid input:checked')].map(i => i.value);
+}
+function updateRunBtn() {
+  const n = tickedTasks().length;
+  $('runBtn').textContent = n ? `▶ Run ${n} task${n > 1 ? 's' : ''}` : '▶ Run Benchmark';
+}
+function updatePromptBox() {
+  const ticked = tickedTasks();
+  const box = $('promptBox');
+  if (ticked.includes('__custom__')) {
+    box.readOnly = false;
+    box.style.opacity = 1;
+    if (!box.value.trim()) box.value = CUSTOM_PROMPT_TEMPLATE;
+  } else {
+    const t = TASKS.find(x => x.id === ticked[0]);
+    box.value = t ? t.prompt : '';
+    box.readOnly = true;                       // named tasks run their canonical prompt
+    box.style.opacity = 0.6;
+  }
+}
 function updateReasoningNote() {
-  const t = TASKS.find(x => x.id === $('taskSelect').value);
-  if (!t) { $('reasoningNote').textContent = 'Reasoning level: your settings — custom prompt, not requirement-scored'; return; }
+  const ticked = tickedTasks();
+  const t = TASKS.find(x => x.id === ticked.find(id => id !== '__custom__'));
+  if (!t) { $('reasoningNote').textContent = ticked.includes('__custom__')
+    ? 'Custom prompt — your settings, not requirement-scored' : 'Tick at least one task.'; return; }
   const lvl = REASONING[t && t.long ? 'long' : 'short'] || (t && t.long ? 'medium' : 'low');
   let note = `Reasoning level: ${lvl} — ${t && t.long ? 'LONG task' : 'standard task'} (framework server starts with this level)`;
   const FIX = { codereview: 'review-sample.py' };
-  if (FIX[t.id]) note += ` · fixture ${FIX[t.id]} inlined below — you can edit it; agent harnesses get a pristine copy per cell`;
+  if (FIX[t.id]) note += ` · fixture ${FIX[t.id]} inlined for that task`;
   $('reasoningNote').textContent = note;
 }
 async function loadTasks() {
   TASKS = await api('/api/tasks');
   try { REASONING = await api('/api/reasoning'); } catch (e) {}
-  const sel = $('taskSelect');
-  sel.innerHTML = TASKS.map(t => `<option value="${t.id}">${t.name}</option>`).join('')
-    + '<option value="__custom__" style="border-top:1px solid var(--border)">✏️ Custom prompt…</option>';
-  sel.onchange = () => {
-    if (sel.value === '__custom__') { $('promptBox').value = CUSTOM_PROMPT_TEMPLATE; updateReasoningNote(); return; }
-    const t = TASKS.find(x => x.id === sel.value);
-    if (t) fillTaskPrompt(t);
-    saveSettings();
-  };
-  // initial call updates the reasoning note WITHOUT saveSettings — a save
-  // here (before loadSettings) would clobber localStorage with defaults
-  { const t = TASKS.find(x => x.id === sel.value); if (t) fillTaskPrompt(t); }
-}
-
-function fillTaskPrompt(t) {
-  // /api/tasks serves fixture tasks with the source already inlined
-  $('promptBox').value = t.prompt;
-  updateReasoningNote();
+  const grid = $('taskGrid');
+  grid.innerHTML = TASKS.map(t =>
+    `<label class="harness-chip"><input type="checkbox" value="${t.id}" checked> ${esc(t.name)}${t.long ? ' · LONG' : ''}</label>`).join('')
+    + `<label class="harness-chip"><input type="checkbox" value="__custom__"> ✏️ Custom prompt…</label>`;
+  grid.querySelectorAll('input').forEach(i => i.addEventListener('change', () => {
+    i.closest('.harness-chip').classList.toggle('on', i.checked);
+    updatePromptBox(); updateReasoningNote(); updateRunBtn(); saveSettings();
+  }));
+  updatePromptBox(); updateReasoningNote(); updateRunBtn();
 }
 
 // template for the Custom prompt task — documents what the model can and
@@ -502,8 +512,6 @@ async function renderComparison() {
 }
 
 /* ---- campaign (Run All) ---- */
-let campaignArmed = null;
-
 /* ---- model sets: pure checkboxes — tick any combination and every action
    honors it. A run merges the ticked sets per framework (one model per
    framework; same-framework overlaps are rejected with a clear message).
@@ -896,7 +904,6 @@ async function applySelection() {
     FRAMEWORKS[fw] = Object.assign({}, FRAMEWORKS[fw], res.frameworks[fw]);
   }
   renderSetInfoLine();
-  resetCampaignArm();
 }
 
 function selectedFws() {
@@ -911,40 +918,11 @@ function renderSetInfoLine() {
               : '<span style="color:var(--red)">no model selected</span>';
 }
 
-async function campaignStart() {
-  const btn = $('campBtnAll');
-  if (campaignArmed) {
-    campaignArmed = null;
-    const harnesses = [...document.querySelectorAll('#harnessGrid input:checked')].map(i => i.value);
-    const res = await api('/api/campaign', { action: 'start', mode: 'all', sets: ['selected'], harnesses });
-    if (!res.ok) { btn.textContent = '\u2715 ' + (res.error || 'failed'); setTimeout(() => location.reload(), 2500); return; }
-    btn.textContent = '\u2713 Campaign started';
-    setTimeout(() => location.reload(), 1200);
-    return;
-  }
-  const nfw = selectedFws().length;
-  if (!nfw) { alert('Select a model in at least one framework dropdown first.'); return; }
-  const info = await api('/api/campaign');
-  const plan = info.sets['selected'];
-  campaignArmed = true;
-  btn.textContent = '\u2713 Confirm \u2014 ' + (plan ? plan.runs : '?') + ' runs \u00b7 ' + nfw + ' framework(s)';
-  btn.style.color = 'var(--amber)';
-  setTimeout(() => resetCampaignArm(), 8000);
-}
-
-function resetCampaignArm() {
-  const btn = document.getElementById('campBtnAll');
-  if (campaignArmed && btn) {
-    campaignArmed = null;
-    btn.textContent = '\u25b6 Run All tasks \u2014 selected models';
-    btn.style.color = '';
-  }
-}
-
 async function startRun() {
-  // the dropdowns ARE the framework selection: apply the picked models, then
-  // run exactly those frameworks (one model per framework; overlaps are
-  // rejected server-side)
+  // the ticked task chips + model dropdowns ARE the selection: apply the
+  // picked models, then run the ticked tasks in order against them
+  const task_ids = tickedTasks();
+  if (!task_ids.length) return alert('Tick at least one task.');
   const picks = {};
   document.querySelectorAll('.fwModelSel').forEach(s => { if (s.value) picks[s.dataset.fw] = s.value; });
   const frameworks = Object.keys(picks);
@@ -957,18 +935,19 @@ async function startRun() {
     FRAMEWORKS[fw] = Object.assign({}, FRAMEWORKS[fw], res.frameworks[fw]);
   }
   renderSetInfoLine();
-  api('/api/run', {
+  const payload = {
     frameworks,
     harnesses,
-    task_id: $('taskSelect').value,
-    prompt: $('promptBox').value,
+    task_ids,
     settings: {
       temperature: parseFloat($('temp').value),
       max_tokens: parseInt($('maxTok').value),
       cell_timeout_s: (parseInt($('cellMin').value) || 120) * 60,
-      top_p: parseFloat($('topP').value),
+      top_p: parseFloat($('topP').value)
     }
-  });
+  };
+  if (task_ids.includes('__custom__')) payload.prompt = $('promptBox').value;
+  api('/api/run', payload);
 }
 
 function stopRun() { api('/api/stop', {}); }
@@ -1150,7 +1129,7 @@ function explainRawPlus() {
 function saveSettings() {
   try {
     localStorage.setItem('benchtest.settings', JSON.stringify({
-      task: $('taskSelect').value,
+      tasks: tickedTasks(),
       temp: $('temp').value,
       maxTok: $('maxTok').value,
       topP: $('topP').value,
@@ -1164,10 +1143,11 @@ function loadSettings() {
   let s;
   try { s = JSON.parse(localStorage.getItem('benchtest.settings') || 'null'); } catch (e) { s = null; }
   if (!s) return;
-  if (s.task && TASKS.some(t => t.id === s.task)) {
-    $('taskSelect').value = s.task;
-    const t = TASKS.find(x => x.id === s.task);
-    if (t && s.prompt == null) $('promptBox').value = t.prompt;
+  if (Array.isArray(s.tasks)) {
+    document.querySelectorAll('#taskGrid input').forEach(i => {
+      i.checked = s.tasks.includes(i.value);
+      i.closest('.harness-chip').classList.toggle('on', i.checked);
+    });
   }
   for (const id of ['temp', 'maxTok', 'cellMin', 'topP'])
     if (s[id] != null) $(id).value = s[id];

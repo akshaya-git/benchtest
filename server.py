@@ -2922,10 +2922,22 @@ def _validate_run(req):
     bad = [h for h in harnesses if h not in HARNESS_LABELS]
     if bad:
         raise ValueError(f"unknown harness(es): {', '.join(map(str, bad))}")
-    if not isinstance(req.get("task_id"), str) or not req.get("task_id"):
-        raise ValueError("task_id: non-empty string required")
-    if not isinstance(req.get("prompt"), str) or not req["prompt"].strip():
-        raise ValueError("prompt: non-empty string required")
+    task_ids = req.get("task_ids")
+    if task_ids is not None:
+        if not isinstance(task_ids, list) or not task_ids:
+            raise ValueError("task_ids: non-empty list required")
+        known = {t["id"] for t in TASKS} | {"__custom__"}
+        bad = [t for t in task_ids if t not in known]
+        if bad:
+            raise ValueError(f"unknown task(s): {', '.join(map(str, bad))}")
+    else:
+        if not isinstance(req.get("task_id"), str) or not req.get("task_id"):
+            raise ValueError("task_id (or task_ids): required")
+    # the prompt matters only for the custom task — named tasks use their
+    # canonical prompt from TASKS
+    if "__custom__" in ([req.get("task_id")] + (task_ids or [])) and \
+            (not isinstance(req.get("prompt"), str) or not req["prompt"].strip()):
+        raise ValueError("prompt: non-empty string required for the custom task")
     settings = req.get("settings") or {}
     if not isinstance(settings, dict):
         raise ValueError("settings: object required")
@@ -2939,6 +2951,32 @@ def _validate_run(req):
         raise ValueError("frameworks: list required")
 
 
+def run_benchmark_batch(req):
+    """Run several ticked tasks sequentially under one run claim (the
+    dashboard's multi-task Run Benchmark). Stop breaks the chain cleanly;
+    a failed task is logged and the remaining tasks still run."""
+    try:
+        for tid in req["task_ids"]:
+            # no RUN_FLAG pre-check here — the flag is only set INSIDE
+            # run_benchmark, so a pre-check broke the batch silently on the
+            # first task and left the run claim stuck. run_benchmark's own
+            # checks + the RunStopped handler below honor Stop.
+            r = dict(req)
+            r["task_id"] = tid
+            try:
+                run_benchmark(r)
+            except RunStopped:
+                log("batch stopped by user — remaining tasks skipped", level="err")
+                break
+            except Exception as e:
+                log(f"batch task {tid} failed: {e}", level="err")
+            if not RUN_FLAG.is_set():   # request_stop() CLEARS the flag —
+                break                   # cleared = a stop was requested
+    finally:
+        with LOCK:
+            STATE["running"] = False   # the claim never outlives the batch
+
+
 def run_benchmark(req):
     _validate_run(req)
     harnesses = req["harnesses"]
@@ -2947,7 +2985,13 @@ def run_benchmark(req):
     frameworks = [fw for fw in (req.get("frameworks") or list(FRAMEWORKS))
                   if fw in FRAMEWORKS] or list(FRAMEWORKS)
     task_id = req["task_id"]
-    prompt = req["prompt"]
+    # named tasks always run their canonical prompt (no per-task editor in
+    # the multi-task UI); the editable prompt box belongs to the custom task
+    if task_id == "__custom__":
+        prompt = req.get("prompt") or ""
+    else:
+        prompt = next((t["prompt"] for t in TASKS if t["id"] == task_id),
+                      req.get("prompt") or "")
     settings = req.get("settings", {})
     try:
         repeats = max(1, min(5, int(settings.get("repeats", 1))))
@@ -3652,7 +3696,9 @@ class Handler(BaseHTTPRequestHandler):
             if taken:
                 self._json({"ok": False, "error": "already running"}, 409)
                 return
-            threading.Thread(target=run_benchmark, args=(req,), daemon=True).start()
+            threading.Thread(
+                target=run_benchmark_batch if req.get("task_ids")
+                else run_benchmark, args=(req,), daemon=True).start()
             self._json({"ok": True})
         elif self.path == "/api/stop":
             request_stop()
