@@ -912,10 +912,16 @@ function selectedFws() {
 }
 
 function renderSetInfoLine() {
-  const on = Object.values(FRAMEWORKS).filter(f => f.model_available !== false);
+  // show the DROPDOWN state — that is what Run applies (the server state
+  // can diverge until a run applies it, which misled the selection twice)
+  const lines = [];
+  document.querySelectorAll('.fwModelSel').forEach(s => {
+    const f = FRAMEWORKS[s.dataset.fw] || {};
+    if (s.value) lines.push(esc(f.name || s.dataset.fw) + ': ' + esc(s.value));
+  });
   document.getElementById('modelSetInfo').innerHTML =
-    on.length ? on.map(f => esc(f.name) + ': ' + esc(f.model_display || f.model)).join('<br>')
-              : '<span style="color:var(--red)">no model selected</span>';
+    lines.length ? lines.join('<br>')
+                 : '<span style="color:var(--red)">no model selected</span>';
 }
 
 async function startRun() {
