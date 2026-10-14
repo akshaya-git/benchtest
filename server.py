@@ -1443,6 +1443,15 @@ def _adopt_served_model_id(fw, retries=10, delay=2.0):
             cfg["model"] = match
             return
         time.sleep(delay)
+    if len(ids) == 1 and fw == "omlx":
+        # omlx is REQUEST-DRIVEN: it starts bare (its last-used model may
+        # auto-load) and loads whichever id the request names. Adopting the
+        # leftover here renamed the selection — 'qwen' runs silently served
+        # flash-next. Keep the selection; the sweep unloads the leftover and
+        # the first request loads the selected model.
+        log(f"{cfg['name']} serves “{ids[0]}” but “{cfg['model']}” is selected — "
+            f"keeping the selection (omlx loads it on request)", fw=fw, level="err")
+        return
     if len(ids) == 1:
         log(f"{cfg['name']} serves model id “{ids[0]}” — adopting", fw=fw, level="ok")
         cfg["model"] = ids[0]
