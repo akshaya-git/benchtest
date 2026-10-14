@@ -59,7 +59,7 @@ DEFAULT_FRAMEWORKS = {
     "omlx": {
         "name": "OMLX",
         "model_source": "hf",
-        "notes": "Model, context (131072), max-tokens (65536) and reasoning are applied PER MODEL from ~/.omlx/model_settings.json at request time — the server starts bare, discovers models from the HF cache, and each request's model id selects its settings entry. Reasoning is task-type driven (top-level 'reasoning' config) via the model entry's chat_template_kwargs.reasoning_effort, rewritten before start and restored after. MTP speculative decoding via the embedded mlx-vlm engine when the entry sets vlm_mtp_enabled + vlm_mtp_draft_model.",
+        "notes": "Model, context (131072), max-tokens (65536) and reasoning are applied PER MODEL from ~/.omlx/model_settings.json. The server discovers models from the HF cache — an incomplete snapshot dir hides a model from discovery — and serves whichever weights are RESIDENT regardless of the requested id, so the tool loads the selected model and waits for residency before any cell (ensure_single_model). Reasoning is task-type driven (top-level 'reasoning' config) via the model entry's chat_template_kwargs.reasoning_effort, rewritten before start and restored after. MTP speculative decoding via the embedded mlx-vlm engine when the entry sets vlm_mtp_enabled + vlm_mtp_draft_model.",
         "port": 7001,
         "model": "Jundot/Qwen3.8-27B-oQ8e-mtp",
         "model_gb": 28, "ctx_tokens": 131072,
@@ -1444,17 +1444,15 @@ def _adopt_served_model_id(fw, retries=10, delay=2.0):
             return
         time.sleep(delay)
     if len(ids) == 1 and fw == "omlx":
-        # omlx is REQUEST-DRIVEN: it starts bare (its last-used model may
-        # auto-load) and loads whichever id the request names. Adopting the
-        # leftover here renamed the selection — 'qwen' runs silently served
-        # flash-next. Keep the selection; the sweep unloads the leftover and
-        # the first request loads the selected model.
+        # omlx serves whichever weights are RESIDENT regardless of the id
+        # a request names; adopting the leftover here renamed the selection
+        # while the leftover kept serving. Keep the selection — the sweep
+        # unloads the leftover and ensure_single_model loads the selection.
         log(f"{cfg['name']} serves “{ids[0]}” but “{cfg['model']}” is selected — "
             f"keeping the selection (omlx loads it on request)", fw=fw, level="err")
         return
-    if len(ids) == 1:
-        log(f"{cfg['name']} serves model id “{ids[0]}” — adopting", fw=fw, level="ok")
-        cfg["model"] = ids[0]
+    # a single non-matching served id is NEVER adopted: the mismatch check
+    # in start_framework restarts the server with the selection instead
     elif ids:
         log(f"⚠ configured model “{cfg['model']}” not in {cfg['name']}'s list "
             f"{ids} after {retries} checks — requests may fail", fw=fw, level="err")
@@ -1471,41 +1469,92 @@ def _served_model_ids(cfg):
         return []
 
 
-def ensure_single_model(fw):
-    """Sequential-testing guarantee: exactly ONE resident model in an OMLX
-    pool — the selected one. Any other resident model is unloaded (two
-    residents combine their RAM and trip the ceiling → 507s), and the
-    selected model is warmed if the unload swept it out too."""
-    if fw != "omlx":
-        return
-    cfg = FRAMEWORKS[fw]
+def _omlx_resident_ids(cfg):
     try:
         stats = _get_json(f"http://127.0.0.1:{cfg['port']}/admin/api/stats")
-        loaded = [m.get("id") for m in
-                  ((stats or {}).get("active_models") or {}).get("models", [])
-                  if m.get("id")]
+        return [m.get("id") for m in
+                ((stats or {}).get("active_models") or {}).get("models", [])
+                if m.get("id")]
     except Exception:
-        return
+        return []
+
+
+def _omlx_discovered_ids(cfg):
+    try:
+        d = _get_json(f"http://127.0.0.1:{cfg['port']}/admin/api/models")
+        return [m.get("id") for m in (d or {}).get("models", []) if m.get("id")]
+    except Exception:
+        return []
+
+
+def ensure_single_model(fw, wait_s=360):
+    """THE invariant every omlx cell runs under: the SELECTED model is the
+    one RESIDENT. omlx serves whatever weights are resident regardless of
+    the id a request names (proven: cells asking for the Qwen build were
+    served flash-next weights while flash-next was resident), so requesting
+    the right id is not enough — the selection must be made resident:
+      1. unload every resident that is not the selection
+      2. if the selection is not resident: it must be DISCOVERED
+         (/admin/api/models — an incomplete HF-cache snapshot hides models
+         from omlx's discovery), then POST the load endpoint and wait
+      3. True = invariant holds, cells may run. False = the selection
+         cannot be served; callers must abort rather than benchmark the
+         wrong weights."""
+    if fw != "omlx":
+        return True
+    cfg = FRAMEWORKS[fw]
     want = discovery.normalize_key(cfg["model"])
-    stale = [mid for mid in loaded
-             if discovery.normalize_key(mid) != want]
-    for mid in stale:
-        try:
-            req = urllib.request.Request(
-                f"http://127.0.0.1:{cfg['port']}/v1/models/"
-                f"{urllib.parse.quote(mid)}/unload", method="POST")
-            urllib.request.urlopen(req, timeout=120)
-            log(f"unloaded non-selected resident {mid} — one model at a time",
-                fw=cfg["name"])
-        except Exception as e:
-            log(f"unload {mid} failed: {e}", fw=cfg["name"], level="err")
-    if stale and cfg["model"] in loaded:
-        # the sweep took the selected model out with the rest — warm it back
-        try:
-            call_chat(fw, "Say OK.", {"temperature": 0.1, "max_tokens": 16})
-            log("selected model re-warmed after the unload sweep", fw=cfg["name"])
-        except Exception as e:
-            log(f"re-warm failed: {e}", fw=cfg["name"], level="err")
+    base = f"http://127.0.0.1:{cfg['port']}"
+
+    def is_resident():
+        return any(discovery.normalize_key(i) == want
+                   for i in _omlx_resident_ids(cfg))
+
+    for mid in _omlx_resident_ids(cfg):
+        if discovery.normalize_key(mid) != want:
+            try:
+                req = urllib.request.Request(
+                    f"{base}/v1/models/{urllib.parse.quote(mid)}/unload",
+                    method="POST")
+                urllib.request.urlopen(req, timeout=120).close()
+                log(f"unloaded non-selected resident {mid} — one model at a "
+                    f"time", fw=cfg["name"])
+            except Exception as e:
+                log(f"unload {mid} failed: {e}", fw=cfg["name"], level="err")
+
+    if is_resident():
+        return True
+
+    if not any(discovery.normalize_key(i) == want
+               for i in _omlx_discovered_ids(cfg)):
+        log(f"omlx has NOT discovered {cfg['model']} — an incomplete "
+            f"HF-cache snapshot hides models from its discovery. Check the "
+            f"model's snapshots/ dir: the newest one must contain its weight "
+            f"shards (delete stub snapshots, keep the complete one).",
+            fw=cfg["name"], level="err")
+        return False
+
+    log(f"loading {cfg['model']} on {cfg['name']} and waiting for it to "
+        f"become resident…", fw=cfg["name"])
+    try:
+        req = urllib.request.Request(
+            f"{base}/v1/models/{urllib.parse.quote(cfg['model'])}/load",
+            method="POST")
+        urllib.request.urlopen(req, timeout=180).close()
+    except Exception as e:
+        log(f"load request: {e}", fw=cfg["name"], level="err")
+    deadline = time.monotonic() + wait_s
+    while time.monotonic() < deadline:
+        if is_resident():
+            log(f"{cfg['model']} resident — benchmarking the selection",
+                fw=cfg["name"], level="ok")
+            return True
+        if not RUN_FLAG.is_set():
+            return False
+        time.sleep(3)
+    log(f"{cfg['model']} did not become resident within {wait_s}s",
+        fw=cfg["name"], level="err")
+    return False
 
 
 _RUN_STATE = {"omlx_restores": []}
@@ -1664,10 +1713,12 @@ def start_framework(fw, reasoning_level=None):
             log(f"{cfg['name']} is up with reasoning={FW_REASONING.get(fw)} — "
                 f"restarting for reasoning={reasoning_level}", fw=fw)
             needs_restart = True
-        if fw in PROCS and fw != "omlx":
+        if fw != "omlx":
             # single-model servers run ONE model via CLI flags: if the served
             # model is not the newly selected one, a reuse would benchmark the
-            # WRONG model — restart with the selection baked in
+            # WRONG model — restart with the selection baked in. Applies to
+            # externally-started healthy servers too: adopt-and-rename is how
+            # wrong-model runs happened before.
             served = _served_model_ids(cfg)
             want = discovery.normalize_key(cfg["model"])
             if served and not any(discovery.normalize_key(s) == want
@@ -1689,7 +1740,7 @@ def start_framework(fw, reasoning_level=None):
             adopt_served_meta(fw)
             if fw == "omlx":
                 _omlx_unload_all(cfg)
-                ensure_single_model(fw)
+                ensure_single_model(fw)   # makes the SELECTION resident
             set_fw_status(fw, "up")
             return True
     set_fw_status(fw, "starting")
@@ -3110,9 +3161,12 @@ def run_benchmark(req):
                         log(f"warmup failed after restart too ({e2}) - "
                             f"continuing", fw=cfg["name"], level="err")
 
+            skip_fw = False
             for rep in range(repeats):
                 for h in harnesses:
                     if not RUN_FLAG.is_set():
+                        break
+                    if skip_fw:
                         break
                     label = HARNESS_LABELS.get(h, h)
                     row = {"framework": fw, "model": cfg["model"], "harness": label,
@@ -3123,7 +3177,18 @@ def run_benchmark(req):
                         STATE["results"].append(row)
                         STATE["current_step"] = f"{cfg['name']} / {label} / {task_name}"
                     log(f"running task “{task_name}”", fw=cfg["name"], harness=label)
-                    ensure_single_model(fw)
+                    if not ensure_single_model(fw):
+                        # never benchmark the wrong weights: record one honest
+                        # error row and skip this framework's remaining cells
+                        row.update({"status": "error",
+                                    "error": f"selected model {cfg['model']} "
+                                             f"could not be made resident on "
+                                             f"{cfg['name']} — cells skipped"})
+                        _jsonl_cell(row)
+                        log(f"skipping {cfg['name']} for this task", fw=cfg["name"],
+                            level="err")
+                        skip_fw = True
+                        break
                     snap_before = server_snapshot(fw)
                     try:
                         r = run_harness(fw, h, task_name,
@@ -3197,6 +3262,9 @@ def run_benchmark(req):
                         log(f"failed: {e}", fw=cfg["name"], harness=label, level="err")
                     _jsonl_cell(row)   # survive crashes/power loss per cell
 
+            if skip_fw:
+                log(f"{cfg['name']} skipped (selection not servable)",
+                    fw=cfg["name"], level="err")
             # framework's tests complete → shut it down before next framework
             with LOCK:
                 STATE["current_step"] = f"stopping {cfg['name']}…"

@@ -275,6 +275,63 @@ class TestQa(unittest.TestCase):
         self.assertIn("normalized over 70", r["qa_notes"])
 
 
+class TestSnapshotComplete(unittest.TestCase):
+    def _mk(self, root, snap, shards=2):
+        d = os.path.join(root, "snapshots", snap)
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "model.safetensors.index.json"), "w") as f:
+            json.dump({"weight_map": {f"w{i}": f"model-0000{i}-of-0000{shards}.safetensors"
+                                      for i in range(shards)}}, f)
+        return d
+
+    def test_stub_snapshot_does_not_hide_complete_one(self):
+        import tempfile as _t
+        with _t.TemporaryDirectory() as root:
+            self._mk(root, "a-stub")                    # index, no shards
+            d = self._mk(root, "b-complete")
+            for i in range(2):
+                open(os.path.join(d, f"model-0000{i}-of-00002.safetensors"), "w").close()
+            self.assertTrue(discovery._snapshot_complete(root))
+
+    def test_only_stub_is_incomplete(self):
+        import tempfile as _t
+        with _t.TemporaryDirectory() as root:
+            self._mk(root, "a-stub")
+            self.assertFalse(discovery._snapshot_complete(root))
+
+    def test_no_index_is_unknown(self):
+        import tempfile as _t
+        with _t.TemporaryDirectory() as root:
+            self.assertIsNone(discovery._snapshot_complete(root))
+
+
+class TestEnsureSingleModel(unittest.TestCase):
+    def setUp(self):
+        self.cfg = server.FRAMEWORKS["omlx"]
+        self._orig = self.cfg["model"]
+
+    def tearDown(self):
+        self.cfg["model"] = self._orig
+
+    def test_non_omlx_is_always_true(self):
+        self.assertTrue(server.ensure_single_model("mtplx"))
+
+    def test_resident_selection_short_circuits(self):
+        from unittest.mock import patch
+        m = "Org--Sel-Model"
+        self.cfg["model"] = m
+        with patch.object(server, "_omlx_resident_ids", return_value=[m]), \
+             patch.object(server, "_omlx_discovered_ids", return_value=[]):
+            self.assertTrue(server.ensure_single_model("omlx"))
+
+    def test_undiscovered_selection_aborts_loudly(self):
+        from unittest.mock import patch
+        self.cfg["model"] = "Org--Ghost-Model"
+        with patch.object(server, "_omlx_resident_ids", return_value=["Other--x"]), \
+             patch.object(server, "_omlx_discovered_ids", return_value=["Other--x"]):
+            self.assertFalse(server.ensure_single_model("omlx"))
+
+
 class TestMigrateMlxlm(unittest.TestCase):
     def test_renames_framework_and_set_keys_preserving_order(self):
         cfg = {"frameworks": {"omlx": {}, "mlxlm": {"port": 7003}, "mtplx": {}},

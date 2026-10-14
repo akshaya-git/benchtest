@@ -153,11 +153,16 @@ def discover_served(port, timeout=4):
 
 
 def _snapshot_complete(cache_dir):
-    """True when the snapshot's shards match its weight index (None when the
-    model has no index to check against). Catches half-downloaded models —
-    observed: a 38 GB partial Speed build that would otherwise be recommended."""
+    """True when ANY snapshot's shards match its weight index (None when no
+    snapshot has an index to check). Catches half-downloaded models —
+    observed twice: a 38 GB partial Speed build, and an interrupted re-
+    download whose stub snapshot (index present, zero shards) HID the
+    complete snapshot next to it from discovery — check every snapshot, a
+    complete one anywhere means the model is usable."""
+    any_index = False
     for p in sorted(glob.glob(os.path.join(cache_dir, "snapshots", "*",
                                            "model.safetensors.index.json"))):
+        any_index = True
         try:
             with open(p) as f:
                 index = json.load(f)
@@ -165,11 +170,9 @@ def _snapshot_complete(cache_dir):
         except (OSError, json.JSONDecodeError, AttributeError):
             continue
         base = os.path.dirname(p)
-        for shard in needed:
-            if not os.path.isfile(os.path.join(base, shard)):
-                return False
-        return True
-    return None
+        if all(os.path.isfile(os.path.join(base, s)) for s in needed):
+            return True
+    return False if any_index else None
 
 
 # public aliases — server.py's extra-path scan shares these instead of
