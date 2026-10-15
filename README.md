@@ -196,6 +196,52 @@ for how it all fits together.
 
 ---
 
+## How it fits together
+
+```
+                    ┌────────────────────────────────────────────────┐
+                    │                index.html  (dashboard)         │
+                    │  model picker · task chips · live results · QA │
+                    └───────┬───────────────────────────┬────────────┘
+                            │ HTTP /api/*               │ artifacts (Open ▸)
+                            ▼                           │
+   ┌───────────────────────────────────────────────┐    │
+   │                server.py  (core)              │    │
+   │                                               │    │
+   │  scan folders ──────► discovery.py            │    │
+   │  (HF cache · MTPLX store · any folder you     │    │
+   │   point a framework at — sizes, contexts,     │    │
+   │   fit vs your RAM, half-download detection)   │    │
+   │                                               │    │
+   │  run logic (all in this one file):            │    │
+   │   start framework ▸ load SELECTED model ▸     │    │
+   │   wait until resident ▸ run cells (6 harness  │    │
+   │   adapters) ▸ per-cell metrics ▸ sweep model  │    │
+   │   ▸ next framework                            │    │
+   │                    │                          │    │
+   │                    ├──► qa.py (per finished   │    │
+   │                    │     cell: artifact        │    │
+   │                    │     delivered/complete/   │    │
+   │                    │     self-test/truncated   │    │
+   │                    │     → 0-100 + notes)      │    │
+   │                    │                          │    │
+   │   crash-safe JSONL ▸ runs/*.json ◄────────────┼────┘
+   └──────┬────────────────────────────────────────┘
+          │ spawns & drives
+          ▼
+   framework servers (OMLX :7001 · MTPLX :7002 · MLX-VLM :7003 ·
+   MLX-Serve :7004 · vLLM :7005)  ← one model resident at a time
+          ▲
+          │ agent harnesses (pi · opencode · aider · hart) talk to them
+          └── via the framework under test, isolated per-cell workdirs
+```
+
+The whole benchmark is three Python files: `server.py` (HTTP + run logic +
+harness adapters), `discovery.py` (model scanning/fit), `qa.py` (reliability
+scoring) — plus `index.html` (no build step). `hart/` is the bundled
+long-horizon harness, `mcp/` the optional MCP server, `skills/` the
+operator skill for AI-agent hosts.
+
 ## How a run works
 
 1. For each selected **framework** (in order):
