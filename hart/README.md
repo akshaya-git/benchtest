@@ -195,21 +195,21 @@ handles clean oneshot builds). Always ends with `HART_RESULT {…}`.
 
 ## 6. Capabilities vs other harnesses
 
-| Capability | raw | pi | opencode | Goose | **hart** |
+| Capability | raw | pi | opencode | aider | **hart** |
 |---|---|---|---|---|---|
-| Agentic file/shell tools | — | ✅ | ✅ | ✅ | ✅ (jailed) |
+| Agentic file/shell tools | — | ✅ | ✅ | edits-only | ✅ (jailed) |
 | Deterministic QA gate (usable threshold) | — | — | — | — | ✅ |
 | Plan with acceptance criteria | — | — | — | — | ✅ |
 | Step completion gated on output quality | — | — | — | — | ✅ |
 | Self-healing validation (0 extra calls) | — | — | — | — | ✅ |
-| Repair cycles on failure | — | partial | partial | partial | ✅ bounded+journaled |
-| Checkpoint/resume any stage | — | sessions | sessions | sessions | ✅ blackboard |
-| Auto-continue past budgets (epochs) | — | ✅ | ✅ | ✅ | ✅ default-on, guarded |
+| Repair cycles on failure | — | partial | partial | — | ✅ bounded+journaled |
+| Checkpoint/resume any stage | — | sessions | sessions | git | ✅ blackboard |
+| Auto-continue past budgets (epochs) | — | ✅ | ✅ | — | ✅ default-on, guarded |
 | Per-call SSE metrics (TTFT/PP/TGS/TPS) | caller | — | — | — | ✅ every call |
-| Live narration + heartbeat + wire dumps | — | ✅ | ✅ | partial | ✅ all three |
-| Framework presets + served-id adoption | — | cfg | cfg | cfg | ✅ one flag |
+| Live narration + heartbeat + wire dumps | — | ✅ | ✅ | — | ✅ all three |
+| Framework presets + served-id adoption | — | cfg | cfg | — | ✅ one flag |
 | Analyze → plan-file → fix workflow | — | manual | manual | manual | ✅ first-class |
-| Zero deps, single file | n/a | npm | npm | binary | ✅ stdlib |
+| Zero deps, single file | n/a | npm | npm | pip | ✅ stdlib |
 
 ## 7. Benchmark integration
 
