@@ -113,6 +113,31 @@ python3 server.py            # or: make run
 #    ➜ Open http://localhost:7090
 ```
 
+## Headline results (Apple M5 Max, 128 GB)
+
+Median decode speed, tokens/s, from the frozen datasets in [`results/`](results/)
+(3 tasks × up to 4 frameworks × 6 harnesses; agent rows use server-measured TGS):
+
+| Framework | Qwen3.8-27B raw / agent | Flash-Next raw / agent | Flash-Next gain |
+|---|---|---|---|
+| **MTPLX** | 51.9 / 46.6 | **89.4 / 84.9** | **~1.7×** |
+| **OMLX** | 53.0 / 51.0 | **88.8 / 87.6** | **~1.7×** |
+| **MLX-Serve** | 52.2 / 49.6 | *does not fit (needs ~112.5 GB)* | — |
+| **MLX-VLM** | 35.8 / 34.9 | 38.7 / 39.0 | ~none — its runtime doesn't exploit the MTP build |
+
+Reliability: 72/72 cells on the Qwen set; 53/54 on Flash-Next (one honest
+thinking-cap error row). The finding that matters: **Flash-Next is a ~1.7×
+win on MTPLX and OMLX but a wash on MLX-VLM** — model choice alone doesn't
+decide speed; the framework does. Interactive charts: the [benchtest Results Space](https://huggingface.co/spaces/akshayshah10/benchtest-results)
+(dataset: [akshayshah10/benchtest-results](https://huggingface.co/datasets/akshayshah10/benchtest-results)).
+
+**Positioning**: raw-performance Apple-Silicon benchmarks exist ([Anubis OSS](https://github.com/Anubis-ops/anubis),
+[apple-silicon-llm-bench](https://github.com/john-rocky/apple-silicon-llm-bench));
+agent-harness leaderboards exist for cloud APIs. benchtest is the cross:
+**local serving frameworks × real agent harnesses × real build artifacts,
+on one Mac** — the "which framework should serve this model, and does the
+harness change the outcome?" tool.
+
 **The task suite** — deliberately small, each task a different kind of work:
 `tetris` (interactive game logic), `codereview` (find the planted defects in a
 sample module), `markdown` (a CommonMark-subset compiler with spec tests),
