@@ -16,8 +16,8 @@ defaults, so you only need to specify the keys you care about.
 | `port` | int | `7090` | Port for the web UI. Override per-invocation with `python3 server.py <port>`. |
 | `route_via_proxy` | bool | `false` | Route agent harnesses (pi/opencode/aider/hart) through the local measurement proxy so their rows get per-request PP/TGS/TTFT. `false` = agents connect straight to the framework (byte-identical to an independent harness run; agent rows then report TPS only). |
 | `pi_thinking` | string | `""` | pi thinking-level suffix appended to `--model` (e.g. `":high"`). Empty = inherit the server's reasoning setting so all cells share one uniform budget. |
-| `reasoning` | object | `{"short": "low", "long": "medium"}` | Reasoning level per task type, applied at framework server start. Standard tasks run at the `short` level, LONG tasks (chip8, raytracer, spreadsheet, markdown, conduit) at the `long` level. Each framework maps a level to its own parameter via `reasoning_flags` (CLI flags) or `reasoning_file` (omlx's per-model settings file). See below. |
-| `hart_path` | string | `"~/Documents/hart/hart.py"` | Path to the `hart` agentic harness script. |
+| `reasoning` | object | `{"short": "low", "long": "low"}` | Reasoning level per task type, applied at framework server start. Standard tasks run at the `short` level, LONG tasks (chip8, raytracer, spreadsheet, markdown, conduit) at the `long` level. Each framework maps a level to its own parameter via `reasoning_flags` (CLI flags) or `reasoning_file` (omlx's per-model settings file). See below. |
+| `hart_path` | string | `"./hart/hart.py"` (bundled) | Path to the hart harness. Defaults to the bundled copy; override only to use your own. |
 | `cell_timeout_s` | int | `7200` | Per-cell wall-clock cap in seconds (clamped 60–21600). A cell that exceeds it is stopped, its partial artifact kept, and the row recorded as a timeout error. Dashboard runs can override per run via *Max cell run time (min)*. |
 | `frameworks` | object | (see below) | One entry per framework. Merged per-framework over the defaults. |
 
@@ -79,7 +79,7 @@ here.
 
 MTPLX loads from its own store (`~/.mtplx/models`) by repo id, so it uses
 `model_source: "mtplx"` and the `{repo}` placeholder. Reasoning is task-type driven
-via `{reasoning}` + `reasoning_flags` (low for standard tasks, medium for LONG):
+via `{reasoning}` + `reasoning_flags` (the `short`/`long` levels; both default `low`):
 
 ```json
 "mtplx": {

@@ -278,9 +278,7 @@ benchtest/
 ├── config.example.json  # the config template (copied to config.json on first run)
 ├── install.sh           # prerequisite check + config seeding
 ├── Makefile             # setup / run / check / clean
-├── requirements.txt     # (empty — stdlib only)
 ├── hart/                # the bundled `hart` agentic harness (hart.py + docs)
-├── examples/            # sample artifacts (e.g. a generated pong.html)
 ├── runs/                # saved runs (gitignored)
 ├── outputs/             # produced artifacts (gitignored)
 ├── logs/                # bench.log + per-framework server logs (gitignored)
@@ -295,7 +293,6 @@ benchtest/
 - **[ARCHITECTURE.md](ARCHITECTURE.md)** — full system diagram (Mermaid) + data flow.
 - **[CONFIG.md](CONFIG.md)** — every config key, explained.
 - **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** — common failures and fixes.
-- **[ANALYSIS.md](ANALYSIS.md)** — the code review: bugs found & fixed, design notes.
 
 ---
 

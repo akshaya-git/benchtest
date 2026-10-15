@@ -677,8 +677,8 @@ REASONING_LEVELS = CONFIG.get("reasoning") or {"short": "low", "long": "low"}
 
 
 def reasoning_level_for(task_id):
-    """Reasoning level for a task: the 'long' level (default medium) for
-    long-horizon tasks, the 'short' level (default low) for standard tasks."""
+    """Reasoning level for a task: the 'long' level for long-horizon tasks,
+    the 'short' level for standard tasks (both default low)."""
     long_task = any(t.get("long") for t in TASKS if t["id"] == task_id)
     return REASONING_LEVELS.get("long" if long_task else "short", "low")
 
@@ -906,12 +906,7 @@ def framework_healthy(fw):
         return False
 
 
-def _get_json(url, timeout=4):
-    try:
-        with urllib.request.urlopen(url, timeout=timeout) as r:
-            return json.loads(r.read())
-    except Exception:
-        return None
+_get_json = discovery._get_json   # single definition lives in discovery
 
 
 def _prom_scrape(text):
@@ -1119,15 +1114,15 @@ def _weighted_rate(records, rate_keys, token_keys, sec_keys):
     records carry token and second counters — a 20-token request then counts
     as much as it deserves, not as much as a 20k-token one — falling back to
     the unweighted mean of per-request rates when they don't."""
-    for r in records:
-        toks = next((r[k] for k in token_keys
+    def _first(r, keys):
+        return next((r[k] for k in keys
                      if isinstance(r.get(k), (int, float)) and r[k] > 0), None)
-        secs = next((r[k] for k in sec_keys
-                     if isinstance(r.get(k), (int, float)) and r[k] > 0), None)
-        if toks is None or secs is None:
-            break
-        tot_t = sum(next(r[k] for k in token_keys if isinstance(r.get(k), (int, float)) and r[k] > 0) for r in records)
-        tot_s = sum(next(r[k] for k in sec_keys if isinstance(r.get(k), (int, float)) and r[k] > 0) for r in records)
+    # weighted only when EVERY record carries both counters — deciding from
+    # records[0] alone made a mixed buffer raise StopIteration→RuntimeError
+    if all(_first(r, token_keys) is not None and _first(r, sec_keys) is not None
+           for r in records):
+        tot_t = sum(_first(r, token_keys) for r in records)
+        tot_s = sum(_first(r, sec_keys) for r in records)
         if tot_t > 0 and tot_s > 0:
             return round(tot_t / tot_s, 1), "weighted"
     vals = [r[k] for r in records for k in rate_keys
@@ -1869,11 +1864,6 @@ def stop_framework(fw):
         else:
             log(f"{cfg['name']} pre-existing server on port {cfg['port']} "
                 f"stopped — memory released", fw=fw)
-    if logf:
-        try:
-            logf.close()
-        except OSError:
-            pass
 
 
 # ----------------------------------------------------------------------------
@@ -4050,13 +4040,17 @@ def main():
         log(f"resuming interrupted campaign at run "
             f"{(saved.get('index') or 0) + 1}/{saved.get('plan_total')} "
             f"({', '.join(saved['sets'])})", level="ok")
-        threading.Thread(target=campaign_runner,
-                         args=(saved.get("mode", "all"), saved.get("sets"),
-                               saved.get("index", 0),
-                               # without this, a resumed week-long campaign
-                               # silently widened to ALL six harnesses
-                               saved.get("harnesses")),
-                         daemon=True).start()
+        if not saved.get("harnesses"):
+            log("campaign.json has no harnesses recorded — NOT auto-resuming "
+                "(a resume would silently widen to ALL harnesses). Resume "
+                "from the dashboard with the intended set instead.",
+                level="err")
+        else:
+            threading.Thread(target=campaign_runner,
+                             args=(saved.get("mode", "all"), saved.get("sets"),
+                                   saved.get("index", 0),
+                                   saved.get("harnesses")),
+                             daemon=True).start()
     log("benchmark server ready"
         + (f" (measurement proxy on :{PROXY_PORT})" if ROUTE_VIA_PROXY else ""))
     if host in ("0.0.0.0", "::"):

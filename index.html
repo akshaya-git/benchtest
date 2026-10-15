@@ -312,7 +312,7 @@ async function api(path, opts) {
 }
 
 /* ---- task checklist: tick the tasks, Run Benchmark runs them in order ---- */
-let REASONING = { short: 'low', long: 'medium' };
+let REASONING = { short: 'low', long: 'low' };
 function tickedTasks() {
   return [...document.querySelectorAll('#taskGrid input:checked')].map(i => i.value);
 }

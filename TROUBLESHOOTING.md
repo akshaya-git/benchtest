@@ -45,8 +45,8 @@ so it still starts — fix the JSON (a trailing comma is the usual culprit) and 
 - **OMLX `507 Cannot load … projected memory`** — another model is resident (often a
   GUI-selected one). Unload it (or restart OMLX) and rerun the cell.
 - **"stopped by user"** — you hit Stop; expected.
-- **Truncated (⚠)** — the response hit `max_tokens`. Raise *Max tokens* (agents) or
-  *Raw max tokens* and rerun, or use **raw+** which auto-continues.
+- **Truncated (⚠)** — the response hit `max_tokens`. Raise *Max tokens* and
+  rerun, or use **raw+** which auto-continues past the cap automatically.
 - **Artifact looks wrong** — open it via the **Artifacts** link and judge visually;
   the tool records throughput, the artifacts are yours to review.
 

@@ -62,7 +62,6 @@ echo
 echo "  Agent harness CLIs (optional):"
 check_cli pi        "npm i -g @earendil-works/pi-coding-agent"
 check_cli opencode  "curl -fsSL https://opencode.ai/install | bash"
-check_cli goose     "brew install goose  (or the Goose repo)"
 have node && ok "node — $(command -v node)" || warn "node not found (needed by pi/opencode)"
 
 # --- Bundled hart harness (ships with benchtest — no install needed) ---

@@ -332,6 +332,62 @@ class TestEnsureSingleModel(unittest.TestCase):
             self.assertFalse(server.ensure_single_model("omlx"))
 
 
+class TestWeightedRateHeterogeneous(unittest.TestCase):
+    def test_mixed_records_fall_back_to_mean_not_crash(self):
+        records = [
+            {"prompt_tokens": 100, "prefill_s": 0.2, "prefill_tok_s": 500.0},
+            {"prefill_tok_s": 300.0},   # no counters — old code raised
+        ]
+        rate, method = server._weighted_rate(
+            records, ("prefill_tok_s",),
+            ("prompt_tokens", "prefill_tokens"), ("prefill_s", "prefill_seconds"))
+        self.assertEqual(method, "mean-of-requests")
+        self.assertEqual(rate, 400.0)
+
+    def test_all_counters_still_weight(self):
+        records = [
+            {"prompt_tokens": 100, "prefill_s": 0.2},
+            {"prompt_tokens": 300, "prefill_s": 1.0},
+        ]
+        rate, method = server._weighted_rate(
+            records, ("prefill_tok_s",),
+            ("prompt_tokens",), ("prefill_s",))
+        self.assertEqual(method, "weighted")
+        self.assertEqual(rate, round(400 / 1.2, 1))
+
+
+class TestHartGuards(unittest.TestCase):
+    """The sibling-prefix escape (SEC-003) — hart's execute_action guards."""
+
+    def _exec(self, workdir, action, args):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "hart_mod", os.path.join(ROOT, "hart", "hart.py"))
+        hart = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(hart)
+        return hart.execute_action({"workdir": workdir, "artifacts": [],
+                                   "observations": [], "_step_writes": {}},
+                                   action, args)
+
+    def test_write_rejects_prefix_sibling(self):
+        import tempfile as _t
+        with _t.TemporaryDirectory(suffix="_wd") as wd:
+            sib = wd + "_evil"
+            os.makedirs(sib, exist_ok=True)
+            r = self._exec(wd, "write_file",
+                           {"path": os.path.join("..", os.path.basename(sib), "x.txt"),
+                            "content": "x" * 20})
+        self.assertIn("error", r)
+
+    def test_write_accepts_inside(self):
+        import tempfile as _t
+        with _t.TemporaryDirectory() as wd:
+            r = self._exec(wd, "write_file",
+                           {"path": "ok.txt", "content": "x" * 20})
+            self.assertNotIn("error", r)
+            self.assertTrue(os.path.isfile(os.path.join(wd, "ok.txt")))
+
+
 class TestMigrateMlxlm(unittest.TestCase):
     def test_renames_framework_and_set_keys_preserving_order(self):
         cfg = {"frameworks": {"omlx": {}, "mlxlm": {"port": 7003}, "mtplx": {}},
