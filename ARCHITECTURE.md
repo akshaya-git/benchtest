@@ -14,7 +14,7 @@ flowchart TB
 
     FW["Local inference server<br/>OMLX · MTPLX · MLX-VLM · MLX-Serve<br/>(one at a time)"]
 
-    H["Harness<br/>raw · raw+ · pi · opencode · goose · hart"]
+    H["Harness<br/>raw · raw+ · pi · opencode · aider · hart"]
 
     M[("Models on disk<br/>HF cache + MTPLX store")]
 
@@ -104,7 +104,7 @@ sequenceDiagram
         loop for each harness
             O->>R: run_harness(fw, harness, prompt, settings)
             R->>S: OpenAI /chat/completions (raw / raw+)
-            R->>R: or spawn pi/opencode/goose/hart (agents)
+            R->>R: or spawn pi/opencode/aider/hart (agents)
             R->>M: collect TPS/TGS/PP/latency/tokens
             M->>M: save the artifact to outputs/ (extension preserved)
             R-->>O: result row
@@ -124,12 +124,12 @@ sequenceDiagram
 | **raw+** | raw with automatic continuation on `finish_reason=length` | `rawplus_generate()` — re-issues with the tail + a "continue at the cut point" instruction, de-dups the seam | client-measured, summed across rounds |
 | **pi** | pi coding agent | `pi --print --provider bench --model …` with an **isolated** `PI_CODING_AGENT_DIR` | agent stdout + `HART_RESULT`-style totals |
 | **opencode** | opencode agent | `opencode run --dir <workdir> --model bench/<id>` with isolated `XDG_CONFIG_HOME` | agent stdout + artifact |
-| **goose** | goose agent | `goose run -t <prompt>` with isolated `XDG_CONFIG_HOME` + `OPENAI_BASE_URL` | agent stdout + artifact |
+| **aider** | aider agent | `aider --model openai/<id>` whole-format, per-cell workdir | `XDG_CONFIG_HOME` + `OPENAI_BASE_URL` | agent stdout + artifact |
 | **hart** | the `hart` agentic harness | `python3 <hart_path>` (config from `hart_path`) | `HART_RESULT {…}` line on stdout |
 
 The **`hart`** harness is **bundled** in this repo under `hart/` (so a fresh clone
 works out of the box); `hart_path` defaults to `./hart/hart.py`. The other agent
-harnesses (`pi`, `opencode`, `goose`) are community tools the user installs themselves.
+harnesses (`pi`, `opencode`, `aider`) are community tools the user installs themselves.
 
 All agent harnesses are pointed at the framework via an **OpenAI-compatible base URL**
 (`http://127.0.0.1:<port>/v1`) and a throwaway API key. Each gets an **isolated config

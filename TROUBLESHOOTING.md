@@ -56,7 +56,7 @@ Your **free RAM** is low (another app or a running framework is using it). The v
 is `size_gb × 1.25 > free RAM`. Close other apps / stop running frameworks, or pick a
 smaller model. Total RAM is shown in the top strip; the verdict uses *free* RAM.
 
-## Agent harness (pi / opencode / goose / hart) rows look empty or fail
+## Agent harness (pi / opencode / aider / hart) rows look empty or fail
 
 - **CLI not installed** — install it (`./install.sh` shows the command).
 - **`hart` not found** — set `hart_path` in `config.json` to the real path of `hart.py`.
