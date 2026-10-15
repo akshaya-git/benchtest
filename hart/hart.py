@@ -113,9 +113,16 @@ def now():
 
 def atomic_write(path, content):
     tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(content)
-    os.replace(tmp, path)
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(content)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def est_tokens(text, ratio=None):
@@ -733,17 +740,6 @@ def inventory(workdir, max_chars=2400):
     return out[:max_chars]
 
 
-def list_workdir(workdir, limit=50):
-    out = []
-    for dirpath, dirnames, filenames in os.walk(workdir):
-        dirnames[:] = [d for d in dirnames if d != ".hart"]
-        for fn in filenames:
-            p = os.path.join(dirpath, fn)
-            out.append(f"{os.path.relpath(p, workdir)} ({os.path.getsize(p)} B)")
-            if len(out) >= limit:
-                return out
-    return out
-
 
 def plan_selfcheck(steps, goal):
     """Deterministic plan validation (recoimprov §5): outputs present, no
@@ -1061,7 +1057,7 @@ def execute_action(state, action, args, step_id=None):
         if ".." in raw_path or os.path.isabs(raw_path):
             return {"error": f"path must be relative to the workdir (got {raw_path!r})"}
         path = os.path.normpath(os.path.join(workdir, raw_path))
-        if not path.startswith(os.path.abspath(workdir)):
+        if not path.startswith(os.path.abspath(workdir) + os.sep):
             return {"error": "path escapes workdir"}
         content = args.get("content")
         if len(content) < 10:
@@ -1089,7 +1085,7 @@ def execute_action(state, action, args, step_id=None):
         if ".." in raw_path or os.path.isabs(raw_path):
             return {"error": "path must be relative to the workdir"}
         path = os.path.normpath(os.path.join(workdir, raw_path))
-        if not path.startswith(os.path.abspath(workdir)):
+        if not path.startswith(os.path.abspath(workdir) + os.sep):
             return {"error": "path escapes workdir"}
         content = args.get("content", "")
         if len(content) < 1:
@@ -1105,7 +1101,7 @@ def execute_action(state, action, args, step_id=None):
     if action == "read_file":
         rp = args.get("path", "").split("#", 1)[0].strip()
         path = os.path.normpath(os.path.join(workdir, rp))
-        if not path.startswith(os.path.abspath(workdir)) or not os.path.isfile(path):
+        if not path.startswith(os.path.abspath(workdir) + os.sep) or not os.path.isfile(path):
             return {"error": "file not found in workdir"}
         with open(path, encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
@@ -1117,7 +1113,7 @@ def execute_action(state, action, args, step_id=None):
     if action == "list_files":
         sub = os.path.normpath(os.path.join(
             workdir, (args or {}).get("path") or ""))
-        if not sub.startswith(os.path.abspath(workdir)):
+        if not sub.startswith(os.path.abspath(workdir) + os.sep):
             return {"error": "path escapes workdir"}
         if os.path.isfile(sub):
             return {"file": os.path.relpath(sub, workdir),
@@ -1142,8 +1138,9 @@ def execute_action(state, action, args, step_id=None):
         # chains) run 200-800 chars - the old 200 cap rejected them and
         # forced the model into extra workaround calls. The dangerous-
         # pattern regex still guards.
-        if len(cmd) > 2000 or re.search(r"rm\s+-rf\s+~|\bsudo\b|curl[^|]*\|\s*sh",
-                                        cmd):
+        if len(cmd) > 2000 or re.search(
+                r"rm\s+-rf\s+[~/]|\bsudo\b|\bdd\b|\bmkfifo\b"
+                r"|curl[^|]*\|\s*(ba|z)?sh|\|\s*(ba|z)?sh\b", cmd):
             return {"error": "command rejected by safety policy"}
         try:
             p = subprocess.run(cmd, shell=True, capture_output=True, text=True,
@@ -1155,7 +1152,7 @@ def execute_action(state, action, args, step_id=None):
     return {"error": f"unknown action {action!r}"}
 
 
-def run_action_batch(state, bb, step, act, call_index):
+def run_action_batch(state, bb, step, act):
     """Normalize single/batch form; type-check; execute in order.
     Returns (done_summary_or_None, n_executed, had_write)."""
     if isinstance(act.get("actions"), list):
@@ -1457,7 +1454,7 @@ def agent_building(state):
             continue
         messages = compact_if_needed(state, build_context(state, step), step)
         # what is this call ASKING for - the model-facing purpose, one line
-        ask = (step.get('title') or step.get('description') or
+        ask = (step.get('title') or
                step.get('id', '') if isinstance(step, dict) else '')
         last_user = next((m for m in reversed(messages)
                           if m.get('role') == 'user'), None)
@@ -1568,11 +1565,6 @@ def agent_building(state):
                 print(f"[next] step {nxt['id']}: {nxt['title']}", flush=True)
             return f"step {step['id']} complete"
 
-
-def agent_building_continued(state, bb, step, step_retries):
-    """Kept for API compatibility; the repair continuation now happens inline
-    in agent_building's loop (budget check resets calls_here per repair)."""
-    return None
 
 
 def agent_validating(state):
@@ -2160,6 +2152,8 @@ signal.signal(signal.SIGINT, sig_handler)
 
 def find_resume_root(start):
     """Newest unfinished hart run under `start` (or its hart-run-* children)."""
+    if not os.path.isdir(start):
+        return None
     cands = []
     for root in ([start] + [os.path.join(start, d) for d in os.listdir(start)
                              if d.startswith("hart-run")]):
@@ -2232,7 +2226,7 @@ def main(argv):
     ap.add_argument("--epochs", type=int, default=336,
                     help="SAFETY VALVE — the harness always runs the fastest "
                          "path first and auto-continues across epochs when a "
-                         "task needs more time (50 epochs ≈ days). A "
+                         "task needs more time. A "
                          "no-progress guard stops pathological runs; only "
                          "lower this if you WANT a hard wall")
     ap.add_argument("--plan-file", default=None,
@@ -2246,8 +2240,6 @@ def main(argv):
                     help="plan only — show the plan and exit (no build)")
     ap.add_argument("--metrics-out", default=None)
     ap.add_argument("--quiet", "-q", action="store_true")
-    ap.add_argument("--print", action="store_true", help="(pi compatibility; "
-                                                         "non-interactive is the default)")
     ap.add_argument("--version", action="store_true")
     args = ap.parse_args(argv)
 
